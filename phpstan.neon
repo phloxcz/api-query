@@ -1,0 +1,13 @@
+parameters:
+    level: 8
+    paths:
+        - src
+    phpVersion: 80400
+    ignoreErrors:
+        # The trait is for controllers of applications
+        - identifier: trait.unused
+        # SQL around a developer's query is put together here: names from the FieldMap, values in parameters
+        -
+            identifier: argument.type
+            path: src/SqlProcessor.php
+            message: '#expects literal-string#'

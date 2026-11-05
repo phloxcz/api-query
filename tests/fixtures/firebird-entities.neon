@@ -1,0 +1,32 @@
+ZAKAZNICI:
+    class: Customer
+    comment: "A customer"
+    searchable:
+        - NAZEV
+    rename:
+        ID: id
+        NAZEV: name
+        KOD: code
+        ZALOZEN: founded
+        AKTIVNI: active
+        KREDIT: credit
+        PIN: pin
+    override:
+        PIN:
+            access: w
+    hasMany:
+        orders:
+            table: OBJEDNAVKY
+            through: ZAKAZNIK_ID
+
+OBJEDNAVKY:
+    class: CustomerOrder
+    comment: "An order"
+    rename:
+        ID: id
+        ZAKAZNIK_ID: customerId
+        CENA: price
+        VYTVORENA: created
+        POZNAMKA: note
+    references:
+        ZAKAZNIK_ID: { name: customer }

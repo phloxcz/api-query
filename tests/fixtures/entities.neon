@@ -1,0 +1,63 @@
+roles:
+    class: Role
+    comment: "A role"
+    searchable:
+        - name
+    hasMany:
+        users:
+            through: role_id
+
+users:
+    class: User
+    comment: "A user"
+    searchable:
+        - email
+        - full_name
+        - password_hash
+    override:
+        is_active:
+            type: bool
+        created_at:
+            type: '\DateTime'
+        birthday:
+            type: '\DateTime'
+        password_hash:
+            access: w
+    virtual:
+        nickname:
+            type: string
+            access: rw
+            comment: "Filled in by the application"
+    references:
+        role_id: { name: role, comment: "The role" }
+    hasMany:
+        orders:
+            through: user_id
+        activeOrders:
+            table: orders
+            through: user_id
+            condition: "status <> 'cancelled'"
+
+orders:
+    class: Order
+    comment: "An order"
+    override:
+        created_at:
+            type: '\DateTime'
+    references:
+        user_id: { name: user }
+    hasMany:
+        items:
+            through: order_id
+
+items:
+    class: Item
+    comment: "An item"
+    references:
+        order_id: { name: order }
+
+secrets:
+    class: Secret
+    comment: "No API may reach this"
+    references:
+        user_id: { name: user }
