@@ -6,6 +6,9 @@
 
 declare(strict_types=1);
 
+use Phlox\ApiCore\Attributes\PatchOf;
+use Phlox\ApiCore\Binding\ParameterBinder;
+use Phlox\ApiCore\Patch;
 use Phlox\ApiQuery\Processor;
 use Phlox\ApiQuery\Query;
 use Phlox\ApiQuery\QueryConfig;
@@ -136,6 +139,33 @@ Assert::exception($use(ExceptDeclared::class), LogicException::class, '%A%declar
 Assert::exception($use(FieldsWord::class), LogicException::class, "%A%'all'%A%");
 Assert::exception($use(ExceptWithoutStar::class), LogicException::class, "%A%only with fields%A%");
 Assert::exception($use(OfAnotherEntity::class), LogicException::class, '%A%was given%A%');
+
+// --- A resource is for what goes out
+
+final class ResourceAsInput
+{
+    public function body(StarRole $role): void
+    {
+    }
+
+    /** @param list<StarRole> $roles */
+    public function list(array $roles): void
+    {
+    }
+
+    public function patch(#[PatchOf(StarRole::class)] Patch $role): void
+    {
+    }
+}
+
+$binder = new ParameterBinder();
+foreach (['body' => ['role' => ['name' => 'x']], 'list' => ['roles' => [['name' => 'x']]], 'patch' => ['role' => ['name' => 'x']]] as $method => $parameters) {
+    Assert::exception(
+        static fn() => $binder->bind(new ReflectionMethod(ResourceAsInput::class, $method), $parameters),
+        LogicException::class,
+        '%A%describes what goes out%A%',
+    );
+}
 
 // --- A resource in the configuration stands for the entity everywhere
 

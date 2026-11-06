@@ -157,6 +157,18 @@ Clients use the names of the resource, and everything else of the entity isn't t
 
 A mistake in a resource, such as a field the entity doesn't have, a write-only one or a misspelled `except`, is an exception for you rather than an error for a client.
 
+A resource only says what goes out. To take data from a request, use a class with `#[Dto]`, see [Saving data](../phlox-rest-api#saving-data):
+
+| | `#[Resource]` | `#[Dto]` |
+|---|---|---|
+| Direction | out | in, and out when a method returns it |
+| Instance | none, a query gives arrays | created from the request, or by you |
+| Fields | a client picks by `select` | all of them |
+| Its source | a property of an entity | anything |
+| Required fields | none | as declared |
+| Constraints | not checked | checked |
+| Relations | as a page, or an object | a plain list, or an object |
+
 #### A resource for the whole application
 
 `#[QueryOf]` holds for one parameter, and a parameter without it gets the whole entity. To have a resource stand for an entity everywhere, say so in the configuration:

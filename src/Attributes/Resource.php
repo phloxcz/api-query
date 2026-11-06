@@ -56,4 +56,12 @@ final class Resource extends Dto
     {
         return true;
     }
+
+    /**
+     * It says what clients see. What they send is a #[Dto].
+     */
+    public function isInput(): bool
+    {
+        return false;
+    }
 }

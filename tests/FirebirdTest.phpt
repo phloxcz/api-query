@@ -16,6 +16,7 @@ use Phlox\ApiQuery\Query;
 use Phlox\ApiQuery\QueryException;
 use Phlox\ApiQuery\SqlProcessor;
 use Phlox\ApiQuery\Tests\Fixtures\FirebirdEntity\Customer;
+use Phlox\ApiQuery\Tests\Fixtures\FirebirdEntity\CustomerOrder;
 use Phlox\EntityDatabase\Database\Explorer;
 use Phlox\EntityDatabase\Metadata\MetaStorage;
 use Tester\Assert;
@@ -224,3 +225,55 @@ Assert::same(8.0, $customers()->get(3)->credit, 'an integer to NUMERIC, not 0.08
 $created = $customers()->insert(['ID' => 9, 'NAZEV' => 'Nový', 'KOD' => '0009', 'AKTIVNI' => true]);
 Assert::same(9, $created->id);
 Assert::same('0009', $created->code);
+
+// --- A new row gives its entity, without the key being given
+
+$orders = static fn() => $explorer->table('OBJEDNAVKY');
+$ordersBefore = $orders()->count('*');
+
+$identity = $orders()->insert(['ZAKAZNIK_ID' => 1, 'CENA' => 9.5]);
+Assert::type(CustomerOrder::class, $identity, 'an identity column');
+Assert::true($identity->id >= 100, 'its real key'); // Firebird 3 starts one above START WITH
+Assert::same(9.5, $identity->price);
+Assert::same($ordersBefore + 1, $orders()->count('*'), 'inserted once');
+
+$trigger = $customers()->insert(['NAZEV' => 'Trigger', 'KOD' => '0500', 'AKTIVNI' => true]);
+Assert::type(Customer::class, $trigger, 'a key from a trigger');
+Assert::true($trigger->id >= 500, 'its real key');
+Assert::same('Trigger', $trigger->name);
+
+// Through a relation, where the parent is added
+$parent = $customers()->get(2);
+$related = $parent->orders->insert(['CENA' => 4]);
+Assert::type(CustomerOrder::class, $related);
+Assert::same(2, $related->customerId);
+Assert::same($identity->id + 1, $related->id);
+
+// And so a query can answer right after it
+Assert::same(['id' => $identity->id + 2, 'price' => 1.5], $processor->process($orders()->insert(['ZAKAZNIK_ID' => 1, 'CENA' => 1.5]), Query::create(['select' => 'id,price'])));
+
+// In a transaction, parent and children together
+$saved = $explorer->transaction(static function (Explorer $db): Customer {
+    $customer = $db->table('ZAKAZNICI')->insert(['NAZEV' => 'Spolu', 'KOD' => '0501', 'AKTIVNI' => false]);
+    $db->table('OBJEDNAVKY')->insert(['ZAKAZNIK_ID' => $customer->id, 'CENA' => 2]);
+    $db->table('OBJEDNAVKY')->insert(['ZAKAZNIK_ID' => $customer->id, 'CENA' => 3]);
+    return $customer;
+});
+Assert::same(2, $saved->orders->count('*'));
+
+$beforeFailure = $customers()->count('*');
+Assert::exception(static fn() => $explorer->transaction(static function (Explorer $db): void {
+    $customer = $db->table('ZAKAZNICI')->insert(['NAZEV' => 'Zpět', 'KOD' => '0502', 'AKTIVNI' => false]);
+    $db->table('OBJEDNAVKY')->insert(['ZAKAZNIK_ID' => $customer->id + 1000, 'CENA' => 2]);
+}), Nette\Database\ForeignKeyConstraintViolationException::class);
+Assert::same($beforeFailure, $customers()->count('*'), 'a failure takes back all of it');
+
+// What was fine stays fine
+$withKey = $orders()->insert(['ID' => 50, 'ZAKAZNIK_ID' => 1, 'CENA' => 1]);
+Assert::same(50, $withKey->id, 'a key given');
+Assert::exception(static fn() => $customers()->insert(['ID' => $trigger->id, 'NAZEV' => 'x', 'KOD' => '0000', 'AKTIVNI' => true]), Nette\Database\UniqueConstraintViolationException::class);
+Assert::exception(static fn() => $customers()->insert(['NAZEV' => 'y', 'KOD' => '0000']), Nette\Database\NotNullConstraintViolationException::class);
+
+// Also a column name which has to be delimited, and a value with what's special in SQL
+$quoted = $customers()->insert(['NAZEV' => "O'Neil ?", 'KOD' => '0503', 'AKTIVNI' => true]);
+Assert::same("O'Neil ?", $quoted->name);
