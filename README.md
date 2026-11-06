@@ -34,6 +34,8 @@ apiQuery:
                 canManage: bool
         App\Entity\Order:
             relations: [user, items]
+        App\Entity\File:
+            resource: App\Api\FileResource   # stands for the entity everywhere, see below
 ```
 
 ## Usage
@@ -110,30 +112,65 @@ A query can reach the readable properties of the entity.
 
 ### Resources
 
-A resource says what clients see of an entity, independently of how the entity changes. It's a DTO with `#[Resource]`, so it's documented like one.
+A resource says what clients see of an entity. It's a class with `#[Resource]`, which names the fields to show, and declares only what differs from the entity:
 
 ```php
 use Phlox\ApiQuery\Attributes\Field;
 use Phlox\ApiQuery\Attributes\Resource;
 
-#[Resource(User::class)]
+// Everything of the entity, such as for a code list. A new column shows up by itself
+#[Resource(Type::class, fields: '*')]
+final class TypeResource
+{
+}
+
+// Everything but these
+#[Resource(Version::class, fields: '*', except: ['blobVersionId'])]
+final class VersionResource
+{
+}
+
+// Only these, so a new column stays hidden until it's added here
+#[Resource(User::class, fields: ['id', 'email', 'createdAt'])]
 final readonly class UserResource
 {
     /** @param list<OrderResource> $purchases */
     public function __construct(
-        public int $id,
-        #[Field('email', searchable: true)] public string $login,
-        #[Field('fullName', filterable: false)] public ?string $displayName,
-        public ?RoleResource $role = null,
-        #[Field('activeOrders')] public array $purchases = [],
+        #[Field('email', searchable: true)] public string $login,                // under another name
+        #[Field(filterable: false)] public ?string $previewToken = null,         // can be read, not filtered or sorted by
+        public ?RoleResource $role = null,                                       // a relation
+        #[Field('activeOrders')] public array $purchases = [],                   // a relation under another name
     ) {
     }
 }
 ```
 
-Fields take the same name on the entity unless `#[Field]` says otherwise. Clients use the names of the resource, and everything else of the entity isn't there. Relations are those whose type is another resource.
+| `fields` | What the query can reach |
+|---|---|
+| leaving it out | what the class declares |
+| a list of names | those, and what the class declares |
+| `'*'` | all readable properties but relations, and what the class declares |
 
-A mistake in a resource, such as a field the entity doesn't have or a write-only one, is an exception for you rather than an error for a client.
+Types and descriptions of named fields come from the entity. What the class declares wins over a named field of the same name, and with a star, a property declared under another name isn't shown under its own as well.
+
+Clients use the names of the resource, and everything else of the entity isn't there. A star never reaches relations, so a relation has to be declared, with another resource as its type. To leave one out, just don't declare it.
+
+A mistake in a resource, such as a field the entity doesn't have, a write-only one or a misspelled `except`, is an exception for you rather than an error for a client.
+
+#### A resource for the whole application
+
+`#[QueryOf]` holds for one parameter, and a parameter without it gets the whole entity. To have a resource stand for an entity everywhere, say so in the configuration:
+
+```neon
+apiQuery:
+    entities:
+        App\Entity\File:
+            resource: App\Api\FileResource
+```
+
+Then a plain `Query` over `File` follows the resource, and so does reaching `File` through a relation of another entity, in `select`, `filter` and `sort`. Naming the entity doesn't get around it. For one place to differ, name another resource with `#[QueryOf]` or `process()`, which is also how to document a parameter, because a plain `Query` doesn't know what it's going to be about.
+
+An entity with a resource can't have `relations` or `computed` here, as the resource declares them.
 
 A field with no property on the entity is `#[Computed]`, and can be selected but not filtered or sorted by:
 
@@ -157,13 +194,13 @@ final readonly class UserResource
 }
 ```
 
-`process()` returns arrays, not instances of the resource, because a query usually selects only some of the fields. For the same reason, no field of a resource is documented as required.
+`process()` returns arrays, not instances of the resource, because a query usually selects only some of the fields. For the same reason, no field of a resource is documented as required. A resource is documented as what comes out of it, so a collection is a page, whatever type it's declared with.
 
 `#[Field(filterable: false)]` on a relation means it can't be filtered or sorted through at all.
 
 ### Raw SQL
 
-For a report that isn't an entity, list the fields with the query:
+For a report that isn't an entity, list the fields with the query. It needs only a connection of Nette Database, so `entityDatabase` doesn't have to be configured and there's nothing to generate:
 
 ```php
 use Phlox\ApiQuery\Fields\Field;

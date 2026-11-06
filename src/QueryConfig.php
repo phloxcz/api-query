@@ -19,8 +19,9 @@ final readonly class QueryConfig
      * @param int $maxDepth How deep a query can go through relations
      * @param int $maxRows Rows of one response, nested ones included; a query wanting more is refused
      * @param bool $ignoreDiacritics Whether a search ignores accents; needs the support of the database
-     * @param array<string, array{relations?: list<string>, computed?: array<string, string>}|object> $entities
-     *        By entity class: the relations a query can reach, and the fields events add, with their types
+     * @param array<string, array{relations?: list<string>, computed?: array<string, string>, resource?: ?string}|object> $entities
+     *        By entity class: the relations a query can reach, and the fields events add, with their types;
+     *        or the #[Resource] which always stands for the entity
      */
     public function __construct(
         public int $maxPageSize = 100,

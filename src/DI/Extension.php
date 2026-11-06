@@ -40,6 +40,7 @@ final class Extension extends Nette\DI\CompilerExtension
             'entities' => Expect::arrayOf(Expect::structure([
                 'relations' => Expect::listOf('string'),
                 'computed' => Expect::arrayOf('string', 'string'),
+                'resource' => Expect::string()->nullable(),
             ])->castTo('array'), 'string'),
             'dateTimeFormat' => Expect::string($defaults->dateTimeFormat),
             'dateFormat' => Expect::string($defaults->dateFormat),
@@ -68,7 +69,8 @@ final class Extension extends Nette\DI\CompilerExtension
     }
 
     /**
-     * An entity named in documentation, such as in #[Response], is described by what a query can reach of it.
+     * An entity or a resource named in documentation, such as in #[Response], is described
+     * by what a query can reach of it, which is what comes out of it.
      */
     private static function registerEntityDescriber(): void
     {
@@ -78,8 +80,15 @@ final class Extension extends Nette\DI\CompilerExtension
         }
         $registered = true;
 
-        SchemaBuilder::addClassDescriber(static fn(string $class, SchemaBuilder $builder): ?array => is_a($class, Entity::class, true)
-            ? FieldMap::forEntity($class)->toSchema($builder)
-            : null);
+        SchemaBuilder::addClassDescriber(static function (string $class, SchemaBuilder $builder): ?array {
+            if (is_a($class, Entity::class, true)) {
+                return FieldMap::forEntity($class)->toSchema($builder);
+            }
+            if (class_exists($class) && FieldMap::isResource($class)) {
+                return FieldMap::canBeBuilt($class) ? FieldMap::forResource($class)->toSchema($builder) : ['type' => 'object'];
+            }
+
+            return null;
+        });
     }
 }

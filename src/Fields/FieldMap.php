@@ -12,7 +12,10 @@ declare(strict_types=1);
 
 namespace Phlox\ApiQuery\Fields;
 
+use Phlox\ApiCore\Attributes\Schema;
 use Phlox\ApiCore\Documentation\SchemaBuilder;
+use Phlox\ApiCore\Types\DocComment;
+use Phlox\ApiCore\Types\DtoField;
 use Phlox\ApiCore\Types\DtoMeta;
 use Phlox\ApiCore\Types\Type;
 use Phlox\ApiQuery\Attributes\Computed;
@@ -27,7 +30,7 @@ use Phlox\EntityDatabase\Metadata\PropertyMeta;
  * Everything a query can reach, and nothing else. A name that isn't here doesn't
  * exist, as far as a client can tell, whichever part of a query it's used in.
  *
- * @phpstan-type EntityConfig array{relations: list<string>, computed: array<string, string>}
+ * @phpstan-type EntityConfig array{relations: list<string>, computed: array<string, string>, resource: ?string}
  */
 final class FieldMap
 {
@@ -43,6 +46,7 @@ final class FieldMap
      * @param string|null $primaryColumn The column of a single primary key
      * @param class-string|null $entity
      * @param bool $shared Follows `apiQuery.entities`, so it's the same everywhere and can hold itself
+     * @param class-string|null $resource The #[Resource] it comes from
      */
     private function __construct(
         public readonly array $fields,
@@ -50,11 +54,12 @@ final class FieldMap
         public readonly ?string $primaryColumn = null,
         public readonly ?string $entity = null,
         private readonly bool $shared = false,
+        private readonly ?string $resource = null,
     ) {
     }
 
     /**
-     * @param array<string, array{relations?: list<string>, computed?: array<string, string>}|object> $entities
+     * @param array<string, array{relations?: list<string>, computed?: array<string, string>, resource?: ?string}|object> $entities
      */
     public static function configureEntities(array $entities): void
     {
@@ -62,9 +67,16 @@ final class FieldMap
         self::$sharedMaps = [];
         foreach ($entities as $class => $config) {
             $config = (array) $config;
+            $resource = isset($config['resource']) ? ltrim($config['resource'], '\\') : null;
+
+            if ($resource !== null && (($config['relations'] ?? []) !== [] || ($config['computed'] ?? []) !== [])) {
+                throw new \LogicException("apiQuery.entities: {$class} has a resource, which declares its own relations and computed fields, so it can't have them here.");
+            }
+
             self::$entities[ltrim($class, '\\')] = [
                 'relations' => $config['relations'] ?? [],
                 'computed' => $config['computed'] ?? [],
+                'resource' => $resource,
             ];
         }
     }
@@ -115,11 +127,30 @@ final class FieldMap
      * `orders.items` allows `orders` and `items` under it. Without a list, the
      * relations of `apiQuery.entities` apply at every level.
      *
+     * A resource configured for the entity stands for it everywhere, also where
+     * it's reached through a relation of another entity.
+     *
      * @param class-string $class
      * @param list<string>|null $relations
      */
     public static function forEntity(string $class, ?array $relations = null): self
     {
+        $resource = self::$entities[ltrim($class, '\\')]['resource'] ?? null;
+        if ($resource !== null) {
+            if ($relations !== null && $relations !== []) {
+                throw new \LogicException("{$class} is shown as {$resource}, which declares its own relations, so none can be given for it.");
+            }
+            if (!class_exists($resource) || !self::isResource($resource)) {
+                throw new \LogicException("apiQuery.entities says {$class} is shown as {$resource}, which isn't a #[Resource].");
+            }
+
+            if (ltrim(self::readResource($resource)->entity, '\\') !== ltrim($class, '\\')) {
+                throw new \LogicException("apiQuery.entities says {$class} is shown as {$resource}, which isn't a #[Resource] of that entity.");
+            }
+
+            return self::forResource($resource);
+        }
+
         if ($relations === null) {
             return self::$sharedMaps[ltrim($class, '\\')] ??= self::buildForEntity($class, null);
         }
@@ -134,7 +165,7 @@ final class FieldMap
     private static function buildForEntity(string $class, ?array $relations): self
     {
         $meta = MetaStorage::get($class);
-        $config = self::$entities[ltrim($class, '\\')] ?? ['relations' => [], 'computed' => []];
+        $config = self::$entities[ltrim($class, '\\')] ?? ['relations' => [], 'computed' => [], 'resource' => null];
         $shared = $relations === null;
 
         // Relation => what's allowed under it
@@ -186,16 +217,18 @@ final class FieldMap
      */
     public static function forResource(string $class): self
     {
-        $attributes = (new \ReflectionClass($class))->getAttributes(Resource::class);
-        if ($attributes === []) {
-            throw new \LogicException("{$class} doesn't have the #[Resource] attribute.");
+        $resource = self::readResource($class);
+        $entity = $resource->entity;
+        $meta = MetaStorage::get($entity);
+        $declared = DtoMeta::getFields($class);
+
+        // Listed first, as what's declared can replace them
+        $fields = [];
+        foreach (self::listResourceFields($class, $resource, $meta, $declared) as $property) {
+            $fields[$property->name] = self::createField($property->name, $property, $meta, null);
         }
 
-        $entity = $attributes[0]->newInstance()->entity;
-        $meta = MetaStorage::get($entity);
-
-        $fields = [];
-        foreach (DtoMeta::getFields($class) as $name => $dtoField) {
+        foreach ($declared as $name => $dtoField) {
             $computed = self::readAttribute($class, $name, Computed::class);
             if ($computed !== null) {
                 $fields[$name] = new Field(
@@ -203,10 +236,12 @@ final class FieldMap
                     null,
                     null,
                     self::normalizeType((string) $dtoField->type),
+                    $dtoField->type->nullable,
                     filterable: false,
                     description: $dtoField->description,
                     computed: true,
                     compute: self::createCompute($class, $name, $computed),
+                    schema: $dtoField->schema,
                 );
                 continue;
             }
@@ -236,10 +271,82 @@ final class FieldMap
                 $target === null ? null : static fn(): self => self::forResource($target),
                 $attribute,
                 $dtoField->description,
+                $dtoField->schema,
             );
         }
 
-        return new self($fields, $meta->table, self::findPrimaryColumn($meta), ltrim($entity, '\\'));
+        return new self($fields, $meta->table, self::findPrimaryColumn($meta), ltrim($entity, '\\'), resource: $class);
+    }
+
+    /**
+     * @param class-string $class
+     */
+    private static function readResource(string $class): Resource
+    {
+        $attributes = (new \ReflectionClass($class))->getAttributes(Resource::class);
+        if ($attributes === []) {
+            throw new \LogicException("{$class} doesn't have the #[Resource] attribute.");
+        }
+
+        return $attributes[0]->newInstance();
+    }
+
+    /**
+     * What `fields` of a resource name, without what the class declares itself. Every
+     * mistake is an exception: a misspelled `except` would otherwise show what it should hide.
+     *
+     * @param class-string $class
+     * @param array<string, DtoField> $declared
+     * @return list<PropertyMeta>
+     */
+    private static function listResourceFields(string $class, Resource $resource, EntityMeta $meta, array $declared): array
+    {
+        if ($resource->fields === null) {
+            return [];
+        }
+
+        if (is_array($resource->fields)) {
+            $found = [];
+            foreach ($resource->fields as $name) {
+                $property = $meta->byProp[$name] ?? null;
+                if ($property === null || !$property->readable) {
+                    throw new \LogicException("Field '{$name}' of {$class} refers to '{$name}', which {$meta->class} has no readable property of that name.");
+                }
+                if ($property->ref !== null || $property->related !== null) {
+                    throw new \LogicException("Field '{$name}' of {$class} is a relation, so it has to be declared in the class with the #[Resource] it's shown as.");
+                }
+                if (!isset($declared[$name])) {
+                    $found[] = $property;
+                }
+            }
+
+            return $found;
+        }
+
+        foreach ($resource->except as $name) {
+            if (!isset($meta->byProp[$name])) {
+                throw new \LogicException("'except' of {$class} names '{$name}', which {$meta->class} has no property of that name.");
+            }
+            if (isset($declared[$name])) {
+                throw new \LogicException("'except' of {$class} names '{$name}', which the class declares itself.");
+            }
+        }
+
+        // A property shown under another name isn't shown under its own as well
+        $taken = [];
+        foreach (array_keys($declared) as $name) {
+            $attribute = self::readAttribute($class, $name, FieldAttribute::class);
+            $taken[$attribute === null ? $name : ($attribute->property ?? $name)] = true;
+        }
+
+        return array_values(array_filter(
+            $meta->properties,
+            static fn(PropertyMeta $property): bool => $property->readable
+                && $property->ref === null
+                && $property->related === null
+                && !isset($taken[$property->name])
+                && !in_array($property->name, $resource->except, true),
+        ));
     }
 
     /**
@@ -346,6 +453,13 @@ final class FieldMap
         if ($this->entity !== null && class_exists($this->entity)) {
             $builder->addClass($this->entity);
 
+            if ($this->resource !== null) {
+                $builder->addClass($this->resource);
+                $class = new \ReflectionClass($this->resource);
+
+                return $builder->reference($class, fn(): array => self::readClassSchema($class) + $this->buildObjectSchema($builder) + self::describeClass($class));
+            }
+
             // Relations can go in a circle here, which only a shared schema can hold
             if ($this->shared) {
                 return $builder->reference(new \ReflectionClass($this->entity), fn(): array => $this->buildObjectSchema($builder));
@@ -388,10 +502,35 @@ final class FieldMap
                 ? self::buildValueSchema($field)
                 : self::buildRelationSchema($field->relation, $builder);
 
+            $schema = $field->schema + $schema;
+
             $properties[$field->name] = $field->description === '' ? ($schema ?: new \stdClass()) : ['description' => $field->description] + $schema;
         }
 
         return ['type' => 'object', 'properties' => $properties ?: new \stdClass()];
+    }
+
+    /**
+     * @param \ReflectionClass<object> $class
+     * @return array<string, mixed>
+     */
+    private static function readClassSchema(\ReflectionClass $class): array
+    {
+        $attributes = $class->getAttributes(Schema::class);
+
+        return $attributes === [] ? [] : $attributes[0]->newInstance()->schema;
+    }
+
+    /**
+     * @param \ReflectionClass<object> $class
+     * @return array<string, mixed>
+     */
+    private static function describeClass(\ReflectionClass $class): array
+    {
+        $doc = new DocComment($class->getDocComment());
+        $text = trim($doc->summary . "\n\n" . $doc->description);
+
+        return $text === '' ? [] : ['description' => $text];
     }
 
     /**
@@ -487,6 +626,7 @@ final class FieldMap
 
     /**
      * @param (\Closure(): self)|null $createTarget
+     * @param array<string, mixed> $schema
      */
     private static function createField(
         string $name,
@@ -495,6 +635,7 @@ final class FieldMap
         ?\Closure $createTarget,
         ?FieldAttribute $attribute = null,
         string $description = '',
+        array $schema = [],
     ): Field {
         $description = $description !== '' ? $description : self::cleanComment($property->comment);
 
@@ -507,6 +648,7 @@ final class FieldMap
                 filterable: $attribute === null || $attribute->filterable,
                 relation: self::createRelation($property, $meta, $createTarget),
                 description: $description,
+                schema: $schema,
             );
         }
 
@@ -522,6 +664,7 @@ final class FieldMap
             !$property->virtual && $type !== Field::Other && ($attribute === null || $attribute->filterable),
             null,
             $description,
+            schema: $schema,
         );
     }
 

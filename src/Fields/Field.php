@@ -36,6 +36,7 @@ final readonly class Field
      * @param bool $filterable Whether it can be filtered and sorted by
      * @param bool $computed It has no property: an event, or $compute, gives its value
      * @param (\Closure(\Phlox\EntityDatabase\Entity\Entity): mixed)|null $compute
+     * @param array<string, mixed> $schema Added to its documentation, from #[Schema]
      */
     public function __construct(
         public string $name,
@@ -49,6 +50,7 @@ final readonly class Field
         public string $description = '',
         public bool $computed = false,
         public ?\Closure $compute = null,
+        public array $schema = [],
     ) {
     }
 }
