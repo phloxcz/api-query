@@ -1,6 +1,8 @@
 # phloxcz/api-query
 
-**Query language for [Phlox APIs](../phlox-api-core): filtering, sorting, paging and field selection, limited to the fields you declare.**
+**English** | [Česky](README.cs.md)
+
+**Query language for [Phlox APIs](https://github.com/phloxcz/api-core): filtering, sorting, paging and field selection, limited to the fields you declare.**
 
 The filter format is the one of Kendo UI, so a grid can talk to it directly. A query can only reach declared fields, whichever part of it asks: a name that isn't declared doesn't exist. Names come from a map and values go to parameters, so nothing a client sends becomes part of the SQL.
 
@@ -8,9 +10,9 @@ The filter format is the one of Kendo UI, so a grid can talk to it directly. A q
 
 ## Requirements
 
-PHP 8.4+, [`phloxcz/api-core`](../phlox-api-core) and [`phloxcz/entity-database`](../phlox-entity-database).
+PHP 8.4+, [`phloxcz/api-core`](https://github.com/phloxcz/api-core) and [`phloxcz/entity-database`](https://github.com/phloxcz/entity-database).
 
-Tested on SQLite, MySQL 8, PostgreSQL 16, SQL Server 2022 and, with [`phloxcz/firebird-database`](../phlox-firebird-database), Firebird 3, 4 and 5.
+Tested on SQLite, MySQL 8, PostgreSQL 16, SQL Server 2022 and, with [`phloxcz/firebird-database`](https://github.com/phloxcz/firebird-database), Firebird 3, 4 and 5.
 
 ## Installation
 
@@ -157,7 +159,7 @@ Clients use the names of the resource, and everything else of the entity isn't t
 
 A mistake in a resource, such as a field the entity doesn't have, a write-only one or a misspelled `except`, is an exception for you rather than an error for a client.
 
-A resource only says what goes out. To take data from a request, use a class with `#[Dto]`, see [Saving data](../phlox-rest-api#saving-data):
+A resource only says what goes out. To take data from a request, use a class with `#[Dto]`, see [Saving data](https://github.com/phloxcz/rest-api#saving-data):
 
 | | `#[Resource]` | `#[Dto]` |
 |---|---|---|
@@ -377,7 +379,7 @@ public function detail(int $id, #[QueryOf(UserResource::class, single: true)] Qu
 
 ## Migrating from abrad450/api-server-nette
 
-The whole way is in [`MIGRATION.md`](../phlox-api-core/MIGRATION.md). What concerns this package:
+The whole way is in [`MIGRATION.md`](https://github.com/phloxcz/api-core/blob/master/MIGRATION.md). What concerns this package:
 
 | Old | New |
 |---|---|
@@ -404,7 +406,7 @@ The format of queries stays, including `criteria`, `take`, `skip` and the operat
 - **`$selection->getEntityName()`** is there as before. Entities themselves move from `abrad450/mapped-database-nette` to `phloxcz/entity-database`.
 - **Nested paging works.** Offsets of nested collections used to be lost by Nette for more than one parent. Clients relying on that get different pages.
 - **A search needs a searchable field,** otherwise it gets `400` rather than being ignored. PostgreSQL no longer creates `unaccent` on its own and ignores accents only with `ignoreDiacritics: true`.
-- **Firebird** needs [`phloxcz/firebird-database`](../phlox-firebird-database). A search uses `CONTAINING` as before, and `ignoreDiacritics` isn't available there, because that's up to the collation of a column.
+- **Firebird** needs [`phloxcz/firebird-database`](https://github.com/phloxcz/firebird-database). A search uses `CONTAINING` as before, and `ignoreDiacritics` isn't available there, because that's up to the collation of a column.
 
 ## License
 
