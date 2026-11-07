@@ -1,0 +1,118 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }}, ${{ matrix.database }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4', '8.5']
+        database: [sqlite, mysql, pgsql, firebird3, firebird4, firebird5]
+        include:
+          - database: sqlite
+            image: ''
+            port: ''
+            dsn: ''
+            user: ''
+            password: ''
+          - database: mysql
+            image: 'mysql:8.4'
+            port: '3306'
+            dsn: 'mysql:host=127.0.0.1;port=3306;dbname=test'
+            user: 'root'
+            password: 'secret'
+          - database: pgsql
+            image: 'postgres:16'
+            port: '5432'
+            dsn: 'pgsql:host=127.0.0.1;port=5432;dbname=test'
+            user: 'postgres'
+            password: 'secret'
+          - database: firebird3
+            image: 'firebirdsql/firebird:3'
+            port: '3050'
+            dsn: 'firebird:dbname=127.0.0.1/3050:/var/lib/firebird/data/test.fdb;charset=UTF8'
+            user: 'SYSDBA'
+            password: 'masterkey'
+          - database: firebird4
+            image: 'firebirdsql/firebird:4'
+            port: '3050'
+            dsn: 'firebird:dbname=127.0.0.1/3050:/var/lib/firebird/data/test.fdb;charset=UTF8'
+            user: 'SYSDBA'
+            password: 'masterkey'
+          - database: firebird5
+            image: 'firebirdsql/firebird:5'
+            port: '3050'
+            dsn: 'firebird:dbname=127.0.0.1/3050:/var/lib/firebird/data/test.fdb;charset=UTF8'
+            user: 'SYSDBA'
+            password: 'masterkey'
+    services:
+      database:
+        image: ${{ matrix.image }}
+        ports:
+          - '${{ matrix.port }}:${{ matrix.port }}'
+        env:
+          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_DATABASE: test
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: test
+          FIREBIRD_ROOT_PASSWORD: masterkey
+          FIREBIRD_DATABASE: test.fdb
+          FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: phlox-api-query
+      - name: Checkout phloxcz/api-core, which composer.json takes from ../phlox-api-core
+        uses: actions/checkout@v4
+        with:
+          repository: phloxcz/api-core
+          path: phlox-api-core
+      - name: Checkout phloxcz/entity-database, which composer.json takes from ../phlox-entity-database
+        uses: actions/checkout@v4
+        with:
+          repository: phloxcz/entity-database
+          path: phlox-entity-database
+      - name: Checkout phloxcz/firebird-database, which composer.json takes from ../phlox-firebird-database
+        uses: actions/checkout@v4
+        with:
+          repository: phloxcz/firebird-database
+          path: phlox-firebird-database
+      - name: Checkout phloxcz/rest-api, which composer.json takes from ../phlox-rest-api
+        uses: actions/checkout@v4
+        with:
+          repository: phloxcz/rest-api
+          path: phlox-rest-api
+      - name: Checkout phloxcz/rpc-api, which composer.json takes from ../phlox-rpc-api
+        uses: actions/checkout@v4
+        with:
+          repository: phloxcz/rpc-api
+          path: phlox-rpc-api
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, pdo_mysql, pdo_pgsql, pdo_firebird
+          coverage: none
+      - name: Install
+        working-directory: phlox-api-query
+        run: composer install --no-interaction --no-progress
+      - name: Wait for the database
+        if: matrix.port != ''
+        run: |
+          for i in $(seq 1 60); do nc -z 127.0.0.1 ${{ matrix.port }} && break; sleep 1; done
+          sleep 5
+      - name: PHPStan
+        if: matrix.database == 'sqlite'
+        working-directory: phlox-api-query
+        run: vendor/bin/phpstan analyse --no-progress
+      - name: Tests
+        working-directory: phlox-api-query
+        env:
+          TEST_DSN: ${{ matrix.dsn }}
+          TEST_USER: ${{ matrix.user }}
+          TEST_PASSWORD: ${{ matrix.password }}
+        run: vendor/bin/tester tests -C -j 1

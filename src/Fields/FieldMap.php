@@ -36,12 +36,6 @@ use Phlox\EntityDatabase\Metadata\PropertyMeta;
  */
 final class FieldMap
 {
-    /** @var array<string, class-string> The #[Resource] of an entity, by the entity's class */
-    private static array $resources = [];
-
-    /** @var array<string, self> */
-    private static array $maps = [];
-
     /**
      * @param array<string, Field> $fields
      * @param string|null $table Null for SQL
@@ -63,38 +57,17 @@ final class FieldMap
     }
 
     /**
-     * @param array<string, class-string> $resources The #[Resource] of an entity, by the entity's class
-     */
-    public static function configureResources(array $resources): void
-    {
-        self::$resources = [];
-        self::$maps = [];
-        foreach ($resources as $entity => $resource) {
-            self::$resources[ltrim($entity, '\\')] = ltrim($resource, '\\');
-        }
-    }
-
-    /**
-     * The #[Resource] standing for an entity, if it has one.
-     *
-     * @return class-string|null
-     */
-    public static function getResourceOf(string $entity): ?string
-    {
-        return self::$resources[ltrim($entity, '\\')] ?? null;
-    }
-
-    /**
      * @param class-string $class A #[Resource] or an entity
+     * @param ResourceRegistry|null $registry Which resource stands for each entity; by default the one documentation uses
      */
-    public static function for(string $class): self
+    public static function for(string $class, ?ResourceRegistry $registry = null): self
     {
         if (self::isResource($class)) {
-            return self::forResource($class);
+            return self::forResource($class, $registry);
         }
 
         if (is_a($class, Entity::class, true)) {
-            return self::forEntity($class);
+            return self::forEntity($class, $registry);
         }
 
         throw new \LogicException("{$class} is neither an entity nor a class with the #[Resource] attribute.");
@@ -126,14 +99,14 @@ final class FieldMap
      *
      * @param class-string $class
      */
-    public static function forEntity(string $class): self
+    public static function forEntity(string $class, ?ResourceRegistry $registry = null): self
     {
-        $class = ltrim($class, '\\');
-        $resource = self::$resources[$class] ?? null;
+        $registry ??= ResourceRegistry::documented();
+        $resource = $registry->getResourceOf($class);
 
         return $resource !== null
-            ? self::forResource($resource)
-            : self::$maps[$class] ??= self::buildDefault($class);
+            ? self::forResource($resource, $registry)
+            : $registry->remember($class, static fn(): self => self::buildDefault(ltrim($class, '\\')));
     }
 
     /**
@@ -156,15 +129,17 @@ final class FieldMap
     /**
      * @param class-string $class
      */
-    public static function forResource(string $class): self
+    public static function forResource(string $class, ?ResourceRegistry $registry = null): self
     {
-        return self::$maps[ltrim($class, '\\')] ??= self::buildResource($class);
+        $registry ??= ResourceRegistry::documented();
+
+        return $registry->remember($class, static fn(): self => self::buildResource($class, $registry));
     }
 
     /**
      * @param class-string $class
      */
-    private static function buildResource(string $class): self
+    private static function buildResource(string $class, ResourceRegistry $registry): self
     {
         $resource = self::readResource($class);
         $entity = $resource->entity;
@@ -191,7 +166,11 @@ final class FieldMap
                     computed: true,
                     compute: self::createCompute($class, $name, $computed),
                     schema: $dtoField->schema,
+                    batch: $computed->batch,
                 );
+                if ($computed->batch && self::findPrimaryColumn($meta) === null) {
+                    throw new \LogicException("Computed field '{$name}' of {$class} is for a batch, so {$entity} needs a single primary key to give its values by.");
+                }
                 continue;
             }
 
@@ -226,7 +205,7 @@ final class FieldMap
                 $name,
                 $property,
                 $meta,
-                $target === null ? null : static fn(): self => self::for($target),
+                $target === null ? null : static fn(): self => self::for($target, $registry),
                 $attribute,
                 $dtoField->description,
                 $dtoField->schema,

@@ -15,7 +15,9 @@ namespace Phlox\ApiQuery\DI;
 use Nette;
 use Nette\Schema\Expect;
 use Phlox\ApiCore\Documentation\SchemaBuilder;
+use Phlox\ApiQuery\Events\QueryListener;
 use Phlox\ApiQuery\Fields\FieldMap;
+use Phlox\ApiQuery\Fields\ResourceRegistry;
 use Phlox\ApiQuery\Processor;
 use Phlox\ApiQuery\QueryConfig;
 use Phlox\ApiQuery\SqlProcessor;
@@ -67,7 +69,7 @@ final class Extension extends Nette\DI\CompilerExtension
         }
 
         // Documents are generated when the container compiles, from what's found here
-        FieldMap::configureResources($resources);
+        ResourceRegistry::setDocumented(new ResourceRegistry($resources));
         self::registerEntityDescriber();
 
         $settings = (array) $this->config;
@@ -83,6 +85,32 @@ final class Extension extends Nette\DI\CompilerExtension
 
         $builder->addDefinition($this->prefix('sqlProcessor'))
             ->setFactory(SqlProcessor::class, ['config' => $config]);
+    }
+
+    /**
+     * Listeners are services, found here and registered once, so they can't pile up
+     * on the shared processors as they would when added on every call.
+     */
+    public function beforeCompile(): void
+    {
+        $builder = $this->getContainerBuilder();
+        $targets = [
+            'processor' => ['onSelection', 'onEntity', 'onProcessedEntity', 'onSearch'],
+            'sqlProcessor' => ['onProcessedRow'],
+        ];
+
+        foreach ($builder->findByType(QueryListener::class) as $name => $definition) {
+            $class = (string) $definition->getType();
+            foreach ($targets as $service => $events) {
+                $processor = $builder->getDefinition($this->prefix($service));
+                assert($processor instanceof Nette\DI\Definitions\ServiceDefinition);
+                foreach ($events as $event) {
+                    if (method_exists($class, $event)) {
+                        $processor->addSetup('$' . $event . '[]', [[new Nette\DI\Definitions\Reference((string) $name), $event]]);
+                    }
+                }
+            }
+        }
     }
 
     /**

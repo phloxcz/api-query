@@ -60,7 +60,7 @@ Assert::same(['data' => [['id' => 1, 'login' => 'ann@example.com']], 'total' => 
 $hidden = $post('query/resources', ['select' => 'email']);
 Assert::same(400, $hidden->status);
 Assert::same(['select.email' => 'is not a known field.'], $hidden->data['error']['fields']);
-Assert::same(-32602, $hidden->data['error']['code']);
+Assert::same(400, $hidden->data['error']['code'], 'in REST, the status');
 
 $entities = $post('query/entities', ['select' => 'email,role(name),orders(id,items(name))', 'pageSize' => 1]);
 Assert::same('admin', $entities->data['data'][0]['role']['name']);

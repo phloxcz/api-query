@@ -217,6 +217,20 @@ final readonly class TaskResource
 
 It's computed only when a query selects it, by name or by a star, and it can't be filtered or sorted by. The method can read anything of the entity, so the record is read with all its columns then.
 
+A method asking the database would ask once for each record. With `batch: true`, it gets all the records at once, and returns the values by their primary key:
+
+```php
+#[Computed(batch: true)] public ?bool $canEdit = null,
+
+/** @param list<Task> $tasks @return array<int, bool> */
+public static function canEdit(array $tasks, TaskPermissions $permissions): array
+{
+    return $permissions->editableOf($tasks);
+}
+```
+
+It's one call for a page, one for a detail, with one record, and one for single records through a relation of all the parents, such as `comments(task(canEdit))`. A nested collection gets a call for each parent. Keep the rule itself in a service, so code outside the API uses it too.
+
 A resource only says what goes out. To take data from a request, use a class with `#[Dto]`, see [Saving data](https://github.com/phloxcz/rest-api#saving-data):
 
 | | `#[Resource]` | `#[Dto]` |
@@ -370,15 +384,33 @@ For an export, the application can lift the limits of rows. `process($selection,
 
 Events are for what a resource can't say. What can be read belongs to [`restrict()`](#what-can-be-read), which holds in filters and sorts through relations too, where an event doesn't.
 
-Register a listener once, in the configuration. The processor is a shared service, so a listener added in `startup()` of a controller is added again on every call, such as for each call of a JSON-RPC batch:
+A listener is a service implementing `QueryListener`, with the methods of the events it listens to. The extension finds it and registers those methods once:
+
+```php
+use Phlox\ApiQuery\Events\ProcessedEntityEventData;
+use Phlox\ApiQuery\Events\QueryListener;
+
+final class FieldMasking implements QueryListener
+{
+    public function __construct(private readonly User $user)
+    {
+    }
+
+    public function onProcessedEntity(ProcessedEntityEventData $event): void
+    {
+        if ($event->entity instanceof Project && !$this->user->isInRole('admin')) {
+            $event->unset[] = 'budget';
+        }
+    }
+}
+```
 
 ```neon
 services:
-    auditListener: App\Api\AuditListener
-    apiQuery.processor:
-        setup:
-            - '$onProcessedEntity[]' = [@auditListener, onProcessedEntity]
+    - App\Api\FieldMasking
 ```
+
+Don't add a listener in `startup()` of a controller. The processor is a shared service, so it would be added again on every call, such as for each call of a JSON-RPC batch. Removing a field by `unset` only hides it in the output: a query can still filter and sort by it. A secret belongs to `access: w`, or out of the resource.
 
 | Event | Can do |
 |---|---|

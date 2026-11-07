@@ -44,6 +44,11 @@ Assert::same(['id', 'email'], array_keys($run('users', ['pageSize' => 1])['data'
 Assert::same(['select.fullName' => $secret], $errors(static fn() => $run('users', ['select' => 'fullName'])));
 Assert::same(['id', 'total'], array_keys($run('orders', ['pageSize' => 1], OrderSummary::class)['data'][0]), 'another view, where it is named');
 
+// Each processor has its own resources: another one doesn't change those of the first
+$plain = new Processor(new QueryConfig(), $container);
+Assert::true(in_array('fullName', array_keys($plain->process($explorer->table('users'), Query::create(['pageSize' => 1]))['data'][0]), true), 'with none, the entity by default');
+Assert::same(['id', 'email'], array_keys($run('users', ['pageSize' => 1])['data'][0]), 'the first one still has its own');
+
 // An entity without a resource: all of its columns, and no relations
 Assert::same(['id', 'name'], array_keys($run('roles', ['pageSize' => 1])['data'][0]));
 Assert::same(['select.users' => $secret], $errors(static fn() => $run('roles', ['select' => 'users'])));
@@ -90,6 +95,24 @@ Assert::same(['id' => 1, 'mine' => true], $run('orders', ['select' => 'id,mine',
 Assert::same(1, OrderResource::$computed);
 Assert::true($run('orders', ['pageSize' => 1])['data'][0]['mine'], 'a star means it too');
 Assert::contains('can not be filtered', $errors(static fn() => $run('orders', ['filter' => ['field' => 'mine', 'value' => true]]))['filter.mine']);
+
+// A batch: one call for all the records, by their primary key
+OrderResource::$batches = [];
+Assert::same([['id' => 1, 'itemCount' => 2], ['id' => 2, 'itemCount' => 1], ['id' => 3, 'itemCount' => 0]], $run('orders', ['select' => 'id,itemCount'])['data']);
+Assert::same([[1, 2, 3]], OrderResource::$batches, 'one call for the page');
+
+OrderResource::$batches = [];
+$itemOrders = array_column($run('items', ['select' => 'id,order(itemCount)', 'sort' => [['field' => 'id']]])['data'], 'order');
+Assert::same([['itemCount' => 2], ['itemCount' => 2], ['itemCount' => 1], null], $itemOrders);
+Assert::same([[1, 1, 2]], OrderResource::$batches, 'one call for the single records of all parents');
+
+OrderResource::$batches = [];
+Assert::same(['itemCount' => 2], $processor->process($explorer->table('orders')->get(1), Query::create(['select' => 'itemCount'])));
+Assert::same([[1]], OrderResource::$batches, 'a detail is a batch of one');
+
+OrderResource::$batches = [];
+$run('orders', ['select' => 'id']);
+Assert::same([], OrderResource::$batches, 'not computed when not selected');
 
 // Services come from the container
 $alone = new Processor(new QueryConfig(resources: [Order::class => OrderResource::class]));

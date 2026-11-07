@@ -37,6 +37,7 @@ final readonly class Field
      * @param bool $computed It has no property: $compute gives its value
      * @param (\Closure(\Phlox\EntityDatabase\Entity\Entity): mixed)|null $compute
      * @param array<string, mixed> $schema Added to its documentation, from #[Schema]
+     * @param bool $batch $compute gets a list of records, and gives values by their primary key
      */
     public function __construct(
         public string $name,
@@ -51,6 +52,7 @@ final readonly class Field
         public bool $computed = false,
         public ?\Closure $compute = null,
         public array $schema = [],
+        public bool $batch = false,
     ) {
     }
 }

@@ -31,6 +31,9 @@ final class OrderResource
 {
     public static int $computed = 0;
 
+    /** @var list<list<int>> IDs each call of the batch got */
+    public static array $batches = [];
+
     /**
      * @param list<Item> $items
      */
@@ -38,7 +41,24 @@ final class OrderResource
         public ?UserResource $user = null,
         public array $items = [],
         #[Computed] public ?bool $mine = null,
+        #[Computed(batch: true)] public ?int $itemCount = null,
     ) {
+    }
+
+    /**
+     * @param list<Order> $orders
+     * @return array<int, int>
+     */
+    public static function itemCount(array $orders, Viewer $viewer): array
+    {
+        self::$batches[] = array_map(static fn(Order $order): int => $order->id, $orders);
+
+        $counts = [];
+        foreach ($orders as $order) {
+            $counts[$order->id] = count($order->items);
+        }
+
+        return $counts;
     }
 
     public static function restrict(Selection $orders, Viewer $viewer): void

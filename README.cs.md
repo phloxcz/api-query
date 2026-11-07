@@ -217,6 +217,20 @@ final readonly class TaskResource
 
 Spočítá se, jen když ho dotaz vybere, jménem nebo hvězdičkou, a nelze podle něj filtrovat ani řadit. Metoda může číst z entity cokoli, proto se záznam pak čte se všemi sloupci.
 
+Metoda, která se ptá databáze, by se ptala pro každý záznam zvlášť. S `batch: true` dostane všechny záznamy najednou a vrátí hodnoty podle primárního klíče:
+
+```php
+#[Computed(batch: true)] public ?bool $canEdit = null,
+
+/** @param list<Task> $tasks @return array<int, bool> */
+public static function canEdit(array $tasks, TaskPermissions $permissions): array
+{
+    return $permissions->editableOf($tasks);
+}
+```
+
+Je to jedno volání pro stránku, jedno pro detail, s jedním záznamem, a jedno pro jednotlivé záznamy přes relaci všech rodičů, třeba `comments(task(canEdit))`. Vnořená kolekce dostane volání za každého rodiče. Samotné pravidlo držte ve službě, aby ho používal i kód mimo API.
+
 Resource říká jen to, co jde ven. Pro data z požadavku použijte třídu s `#[Dto]`, viz [Ukládání dat](https://github.com/phloxcz/rest-api/blob/master/README.cs.md#ukládání-dat):
 
 | | `#[Resource]` | `#[Dto]` |
@@ -370,15 +384,33 @@ Pro export může aplikace limity řádků zrušit. `process($selection, $query,
 
 Události jsou pro to, co Resource neřekne. Co lze číst, patří do [`restrict()`](#co-lze-číst), které platí i ve filtrech a řazení přes relace, kde událost neplatí.
 
-Posluchače registrujte jednou, v konfiguraci. Procesor je sdílená služba, takže posluchač přidaný ve `startup()` controlleru se přidává znovu při každém volání, třeba pro každé volání v dávce JSON-RPC:
+Posluchač je služba s rozhraním `QueryListener` a metodami událostí, které poslouchá. Rozšíření ho najde a ty metody zaregistruje jednou:
+
+```php
+use Phlox\ApiQuery\Events\ProcessedEntityEventData;
+use Phlox\ApiQuery\Events\QueryListener;
+
+final class FieldMasking implements QueryListener
+{
+    public function __construct(private readonly User $user)
+    {
+    }
+
+    public function onProcessedEntity(ProcessedEntityEventData $event): void
+    {
+        if ($event->entity instanceof Project && !$this->user->isInRole('admin')) {
+            $event->unset[] = 'budget';
+        }
+    }
+}
+```
 
 ```neon
 services:
-    auditListener: App\Api\AuditListener
-    apiQuery.processor:
-        setup:
-            - '$onProcessedEntity[]' = [@auditListener, onProcessedEntity]
+    - App\Api\FieldMasking
 ```
+
+Posluchače nepřidávejte ve `startup()` controlleru. Procesor je sdílená služba, takže by se přidával znovu při každém volání, třeba pro každé volání v dávce JSON-RPC. Odebrání pole přes `unset` ho jen skryje ve výstupu: dotaz podle něj pořád může filtrovat a řadit. Tajné pole patří do `access: w`, nebo ven z Resource.
 
 | Událost | Co může |
 |---|---|

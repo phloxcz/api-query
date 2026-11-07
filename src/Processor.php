@@ -23,6 +23,7 @@ use Phlox\ApiQuery\Events\ProcessSelectionEventData;
 use Phlox\ApiQuery\Events\SearchEventData;
 use Phlox\ApiQuery\Fields\Field;
 use Phlox\ApiQuery\Fields\FieldMap;
+use Phlox\ApiQuery\Fields\ResourceRegistry;
 use Phlox\ApiQuery\Sql\ConditionCompiler;
 use Phlox\ApiQuery\Sql\SelectNode;
 use Phlox\EntityDatabase\Database\Table\Selection;
@@ -67,6 +68,9 @@ final class Processor
     /** @var Selection<Entity>|null Where tables of other entities come from, for restrict() of resources: the root's */
     private ?Selection $source = null;
 
+    /** Which resource stands for each entity, for this processor alone */
+    private readonly ResourceRegistry $resources;
+
     /**
      * @param Container|null $container Gives services to methods of resources, which ask for them by type
      */
@@ -74,7 +78,7 @@ final class Processor
         private readonly QueryConfig $config = new QueryConfig(),
         private readonly ?Container $container = null,
     ) {
-        FieldMap::configureResources($config->resources);
+        $this->resources = new ResourceRegistry($config->resources);
     }
 
     /**
@@ -121,7 +125,7 @@ final class Processor
             throw new \LogicException("The query is about {$map->entity}, but it was given {$class}.");
         }
 
-        $this->source = $what instanceof Selection ? $what : self::readSelection($what);
+        $this->source = $what instanceof Selection ? $what : $what->getSelection();
         $driver = $this->getDriver($what);
         $compiler = new ConditionCompiler($driver, $this->config->maxDepth, $this->buildRestriction(...));
 
@@ -158,18 +162,7 @@ final class Processor
         /** @var class-string $target */
         $target = $of ?? $query->getQueryOf()->class ?? $class;
 
-        return FieldMap::for($target);
-    }
-
-    /**
-     * The selection an entity was read from, to reach other tables of its database.
-     *
-     * @return Selection<Entity>|null
-     */
-    private static function readSelection(Entity $entity): ?Selection
-    {
-        // An entity keeps it for itself, and this package is the one asking
-        return (fn(): ?Selection => $this->_ctx->selection)->call($entity);
+        return FieldMap::for($target, $this->resources);
     }
 
     /**
@@ -478,6 +471,19 @@ final class Processor
      */
     private function processRecords(array $entities, SelectNode $node, array $path, ConditionCompiler $compiler): array
     {
+        return array_values(array_filter(
+            $this->processAll($entities, $node, $path, $compiler),
+            static fn(?array $record): bool => $record !== null,
+        ));
+    }
+
+    /**
+     * @param list<Entity> $entities
+     * @param list<string> $path
+     * @return list<array<string, mixed>|null> In the order given; null for a record left out
+     */
+    private function processAll(array $entities, SelectNode $node, array $path, ConditionCompiler $compiler): array
+    {
         // Prepared up front, to know how many rows it comes to before Nette loads them
         $collections = [];
         foreach ($node->children as $name => $child) {
@@ -523,24 +529,71 @@ final class Processor
             $allowed[$name] = $this->findAllowed($child->map, array_values($keys));
         }
 
+        // Single records of all parents at once, so what's computed for a batch is one call for them
+        $singles = [];
+        foreach ($node->children as $name => $child) {
+            $relation = $node->fields[$name]->relation;
+            if ($relation === null || $relation->toMany) {
+                continue;
+            }
+            $property = (string) $node->fields[$name]->property;
+            $targets = [];
+            foreach ($entities as $index => $entity) {
+                if (isset($allowed[$name]) && !isset($allowed[$name][(string) ($entity->toArrayDb()[$relation->localColumn] ?? '')])) {
+                    continue;
+                }
+                $target = $entity->{$property};
+                if ($target instanceof Entity) {
+                    $targets[$index] = $target;
+                }
+            }
+            $singles[$name] = $targets === []
+                ? []
+                : array_combine(array_keys($targets), $this->processAll(array_values($targets), $child, [...$path, $name], $compiler));
+        }
+
+        $batches = $this->computeBatches($entities, $node);
+
         $output = [];
         foreach ($entities as $index => $entity) {
-            $record = $this->processRecord($entity, $node, $path, $compiler, $collections[$index] ?? [], $allowed);
-            if ($record !== null) {
-                $output[] = $record;
-            }
+            $output[] = $this->processRecord($entity, $node, $path, $compiler, $collections[$index] ?? [], $singles, $index, $batches);
         }
 
         return $output;
     }
 
     /**
+     * Fields computed for a batch: one call for all the records, giving values by their primary key.
+     *
+     * @param list<Entity> $entities
+     * @return array<string, array<int|string, mixed>> By field
+     */
+    private function computeBatches(array $entities, SelectNode $node): array
+    {
+        $values = [];
+        foreach ($node->fields as $name => $field) {
+            if (!$field->batch || $field->compute === null || $entities === []) {
+                continue;
+            }
+
+            $result = $this->invoke($field->compute, [$entities]);
+            if (!is_array($result)) {
+                throw new \LogicException("Computed field '{$name}' of {$node->map->resource} is for a batch, so its method returns values by primary key.");
+            }
+            $values[(string) $name] = $result;
+        }
+
+        return $values;
+    }
+
+    /**
      * @param list<string> $path
      * @param array<string, array{Selection<Entity>, int}> $collections
-     * @param array<string, array<int|string, true>> $allowed Keys of single records restrict() lets through, by relation
+     * @param array<string, array<int, array<string, mixed>|null>> $singles Records of single relations, by relation and the index of the parent
+     * @param array<string, array<int|string, mixed>> $batches Values computed for a batch, by field and primary key
      * @return array<string, mixed>|null
      */
-    private function processRecord(Entity $entity, SelectNode $node, array $path, ConditionCompiler $compiler, array $collections, array $allowed = []): ?array
+    private function processRecord(Entity $entity, SelectNode $node, array $path, ConditionCompiler $compiler, array $collections, array $singles, int $index, array $batches): ?array
     {
         $select = array_map(strval(...), array_keys($node->fields));
 
@@ -555,7 +608,10 @@ final class Processor
             $name = (string) $name;
 
             if ($field->computed) {
-                if ($field->compute !== null) {
+                if ($field->batch) {
+                    $key = $entity->toArrayDb()[(string) $node->map->primaryColumn] ?? null;
+                    $output[$name] = $this->formatValue($key === null ? null : $batches[$name][$key] ?? null, $field);
+                } elseif ($field->compute !== null) {
                     $output[$name] = $this->formatValue($this->invoke($field->compute, [$entity]), $field);
                 }
                 continue;
@@ -572,14 +628,8 @@ final class Processor
             $childPath = [...$path, $name];
 
             if (!$field->relation->toMany) {
-                if (isset($allowed[$name]) && !isset($allowed[$name][(string) ($entity->toArrayDb()[$field->relation->localColumn] ?? '')])) {
-                    $output[$name] = null;
-                    continue;
-                }
-                $target = $entity->{$property};
-                $output[$name] = $target instanceof Entity
-                    ? ($this->processRecords([$target], $child, $childPath, $compiler)[0] ?? null)
-                    : null;
+                // Read for all parents at once; none when there's no record, or restrict() hides it
+                $output[$name] = $singles[$name][$index] ?? null;
                 continue;
             }
 
