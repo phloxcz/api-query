@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Resources which name their fields, and a resource standing for an entity in the configuration.
+ * Resources which name their fields, and resources standing for their entities, found in their namespace.
  */
 
 declare(strict_types=1);
@@ -13,9 +13,7 @@ use Phlox\ApiQuery\Processor;
 use Phlox\ApiQuery\Query;
 use Phlox\ApiQuery\QueryConfig;
 use Phlox\ApiQuery\QueryException;
-use Phlox\ApiQuery\Tests\Fixtures\Entity\Order;
 use Phlox\ApiQuery\Tests\Fixtures\Entity\Role;
-use Phlox\ApiQuery\Tests\Fixtures\Entity\User;
 use Phlox\ApiQuery\Tests\Fixtures\ShortDocs\ShortController;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\ExceptDeclared;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\ExceptTypo;
@@ -26,9 +24,7 @@ use Phlox\ApiQuery\Tests\Fixtures\ShortResources\ListsRelation;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\ListsSecret;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\ListsUnknown;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\LoopUser;
-use Phlox\ApiQuery\Tests\Fixtures\ShortResources\NotAResource;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\OfAnotherEntity;
-use Phlox\ApiQuery\Tests\Fixtures\ShortResources\RoleWithIdOnly;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\StarRole;
 use Phlox\ApiQuery\Tests\Fixtures\ShortResources\StarUser;
 use Phlox\EntityDatabase\Database\Explorer;
@@ -38,22 +34,13 @@ use Tester\Assert;
 
 require __DIR__ . '/bootstrap.php';
 require __DIR__ . '/fixtures/ShortResources.php';
+require __DIR__ . '/fixtures/ShortDefaults/Resources.php';
 
-$userClass = User::class;
-$orderClass = Order::class;
-$roleClass = Role::class;
-$roleResource = RoleWithIdOnly::class;
 $controller = ShortController::class;
 
 $container = createContainer(<<<NEON
 apiQuery:
-    entities:
-        {$userClass}:
-            relations: [role, orders]
-        {$orderClass}:
-            relations: [user, items]
-        {$roleClass}:
-            resource: {$roleResource}
+    resources: Phlox\\ApiQuery\\Tests\\Fixtures\\ShortDefaults
 
 restApi:
     endpoints:
@@ -69,8 +56,8 @@ NEON, 'restApi: Phlox\RestApi\DI\Extension');
 $explorer = $container->getByType(Explorer::class);
 $users = static fn() => $explorer->table('users');
 $roles = static fn() => $explorer->table('roles');
-$entities = $container->getService('apiQuery.config')->entities;
-$processor = new Processor(new QueryConfig(entities: $entities));
+$resources = $container->getService('apiQuery.config')->resources;
+$processor = new Processor(new QueryConfig(resources: $resources));
 
 $errors = static function (callable $call): array {
     return Assert::exception($call, QueryException::class)->getData()['fields'];
@@ -167,7 +154,7 @@ foreach (['body' => ['role' => ['name' => 'x']], 'list' => ['roles' => [['name' 
     );
 }
 
-// --- A resource in the configuration stands for the entity everywhere
+// --- A resource found in its namespace stands for the entity everywhere
 
 Assert::same(['id' => 1], $processor->process($roles(), Query::create(['pageSize' => 1]))['data'][0], 'with nothing said');
 Assert::same(['select.name' => $unknown], $errors(static fn() => $processor->process($roles(), Query::create(['select' => 'name']))));
@@ -183,39 +170,17 @@ Assert::same(['select.role.name' => $unknown], $errors(static fn() => $processor
 Assert::same(['filter.role.name' => $unknown], $errors(static fn() => $processor->process($users(), Query::create(['filter' => ['field' => 'role.name', 'value' => 'admin']]))));
 Assert::same(['sort.role.name' => $unknown], $errors(static fn() => $processor->process($users(), Query::create(['sort' => [['field' => 'role.name']]]))));
 Assert::same(['select.orders.user.role.name' => $unknown], $errors(static fn() => $processor->process($users(), Query::create(['select' => 'orders(user(role(name)))']))), 'however deep');
-Assert::same(['id' => 1], $processor->process($users(), Query::create(['select' => 'role', 'pageSize' => 1]), relations: ['role'])['data'][0]['role'], 'also with relations listed at one place');
 
-Assert::exception(
-    static fn() => $processor->process($users(), Query::create(['select' => 'role']), relations: ['role.users']),
-    LogicException::class,
-    '%A%declares its own relations%A%',
-);
-Assert::exception(
-    static fn() => $processor->process($roles(), Query::create(), relations: ['users']),
-    LogicException::class,
-    '%A%declares its own relations%A%',
-);
 
 // Another resource is how one place differs
 Assert::same(['id' => 1, 'name' => 'admin'], $of(StarRole::class, ['pageSize' => 1])['data'][0]);
-
-// Mistakes in the configuration
-
-$configure = static fn(array $config) => static fn() => (new Processor(new QueryConfig(entities: [Role::class => $config])))->process($roles(), Query::create());
-Assert::exception($configure(['resource' => StarRole::class, 'relations' => ['users']]), LogicException::class, '%A%has a resource%A%');
-Assert::exception($configure(['resource' => StarRole::class, 'computed' => ['a' => 'int']]), LogicException::class, '%A%has a resource%A%');
-Assert::exception($configure(['resource' => NotAResource::class]), LogicException::class, "%A%isn't a #[Resource]%A%");
-Assert::exception($configure(['resource' => 'App\NoSuchClass']), LogicException::class, "%A%isn't a #[Resource]%A%");
-Assert::exception($configure(['resource' => OfAnotherEntity::class]), LogicException::class, "%A%isn't a #[Resource]%A%");
-
-$processor = new Processor(new QueryConfig(entities: $entities));
 
 // --- Through a controller
 
 $rest = $container->getByType(Dispatcher::class);
 $post = static fn(string $path, array $body = []): Phlox\RestApi\Result => $rest->handle('api', 'POST', $path, [], 'application/json', json_encode($body));
 
-Assert::same([['id' => 1], ['id' => 2]], $post('short/roles')->data['data'], 'a plain Query follows the configuration');
+Assert::same([['id' => 1], ['id' => 2]], $post('short/roles')->data['data'], 'a plain Query follows the resource of the entity');
 Assert::same(['select.name' => $unknown], $post('short/roles', ['select' => 'name'])->data['error']['fields']);
 Assert::same('admin', $post('short/users', ['select' => 'role(name)', 'pageSize' => 1])->data['data'][0]['role']['name'], 'the attribute says another resource');
 Assert::same(1, $post('short/loop', ['select' => 'orders(user(id))', 'pageSize' => 1])->data['data'][0]['orders']['data'][0]['user']['id']);
@@ -251,8 +216,8 @@ Assert::false(in_array('fullName', $fields, true), 'what can not be filtered by'
 Assert::false(in_array('age', $fields, true));
 
 Assert::same(['$ref' => '#/components/schemas/StarRole'], $paths['/short/described']['post']['responses'][200]['content']['application/json']['schema']['properties']['data']['items'], '#[Response] with a resource');
-Assert::same(['$ref' => '#/components/schemas/RoleWithIdOnly'], $paths['/short/entity']['post']['responses'][200]['content']['application/json']['schema'], 'an entity is documented as what stands for it');
-Assert::same(['id'], array_keys($schemas['RoleWithIdOnly']['properties']));
+Assert::same(['$ref' => '#/components/schemas/IdOnlyRole'], $paths['/short/entity']['post']['responses'][200]['content']['application/json']['schema'], 'an entity is documented as what stands for it');
+Assert::same(['id'], array_keys($schemas['IdOnlyRole']['properties']));
 
 Assert::same(['$ref' => '#/components/schemas/LoopOrder'], $schemas['LoopUser']['properties']['orders']['properties']['data']['items'], 'relations can go in a circle');
 Assert::same([['$ref' => '#/components/schemas/LoopUser'], ['type' => 'null']], $schemas['LoopOrder']['properties']['user']['anyOf']);

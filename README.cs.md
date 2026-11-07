@@ -29,16 +29,10 @@ apiQuery:
     maxDepth: 3             # jak hluboko může dotaz jít přes relace
     maxRows: 10000          # řádky kolekcí v jedné odpovědi; dotaz, který chce víc, dostane 400
     ignoreDiacritics: false # vyžaduje podporu databáze, viz níže
-    entities:               # na co dotaz dosáhne, pro celou aplikaci
-        App\Entity\User:
-            relations: [role, orders]
-            computed:       # co přidávají události, kvůli dokumentaci
-                canManage: bool
-        App\Entity\Order:
-            relations: [user, items]
-        App\Entity\File:
-            resource: App\Api\FileResource   # platí pro entitu všude, viz níže
+    resources: App\Api\Resource   # kde jsou Resource; pro víc jmenných prostorů seznam
 ```
+
+Víc se nekonfiguruje. Na co dotaz dosáhne, je v [Resource](#resource), a entita bez ní se zobrazí [výchozím způsobem](#entita-bez-resource).
 
 ## Použití
 
@@ -58,7 +52,7 @@ class UserController extends ApiController
 }
 ```
 
-Na co dotaz dosáhne, určuje `apiQuery.entities`. Pokud se má jedno místo lišit, nebo chcete použít Resource, řekněte to přes `#[QueryOf]`. Stejný atribut dodá dokumentaci pole a tvar odpovědi.
+Dotaz se řídí Resource entity `User`, ať je použitý kdekoli. `#[QueryOf]` je jen pro místo, které se má lišit, s jinou Resource, a aby dokumentace věděla, čeho se parametr týká:
 
 ```php
 use Phlox\ApiCore\ApiController;
@@ -77,7 +71,7 @@ class UserController extends ApiController
     }
 
     #[HttpPost]
-    public function list(#[FromBody, QueryOf(User::class, relations: ['role', 'orders.items'])] Query $query): array
+    public function list(#[FromBody, QueryOf(UserResource::class)] Query $query): array
     {
         return $this->processor->process($this->db->table('users'), $query);
     }
@@ -103,18 +97,19 @@ $criteria->setSort($remaining);
 
 ## Na co dotaz dosáhne
 
-### Entity
+Všechno, co klient z entity vidí, je na jednom místě: v její Resource. Resource platí pro svou entitu všude, kam dotaz dosáhne, v kořeni i přes relaci, v `select`, `filter` i `sort`, a uvedení entity to neobejde.
 
-Dotaz dosáhne na čitelné vlastnosti entity.
+### Entita bez Resource
 
-- `access: w`, jako u hesla, pro dotaz neexistuje: nejde vybrat, filtrovat, řadit ani prohledávat, ani přes relaci. **Podle hodnoty, kterou událost jen maskuje ve výstupu, se pořád dá filtrovat,** takže ji klient může uhodnout znak po znaku. Cokoli tajného označte `access: w`.
-- Relace jsou povolené jen podle názvu. `apiQuery.entities` je vyjmenovává pro každou entitu a platí na každé úrovni, až do `maxDepth`. `relations: ['role', 'orders.items']` u `#[QueryOf]` nebo `process()` je pro daný dotaz nahradí: povolí `role`, `orders` a pod ním `items` a nic jiného.
+Zobrazí se se všemi čitelnými sloupci, bez relací a bez omezení. To se hodí pro číselníky, které smí číst každý, takže nepotřebují žádnou třídu. Entita, která potřebuje relace, omezení nebo jiná pole, dostane Resource.
+
+- `access: w` v `entities.neon`, jako u hesla, pro dotaz neexistuje: nejde vybrat, filtrovat, řadit ani prohledávat, ani přes relaci. **Podle hodnoty, kterou událost jen maskuje ve výstupu, se pořád dá filtrovat,** takže ji klient může uhodnout znak po znaku. Cokoli tajného označte `access: w`.
 - Virtuální vlastnost lze vybrat, když je uvedená, a nelze podle ní filtrovat.
-- Co událost přidá přes `set`, jde na výstup vždy. Uveďte to v `computed`, aby to bylo dokumentované a dalo se to uvést v `select`.
+- Nevede z ní žádná relace, takže neotevře cestu k dalším tabulkám. Dotaz se k ní dostane jen tam, kde to řekne váš kód: controller, který čte její tabulku, nebo Resource s relací na ni.
 
 ### Resource
 
-Resource říká, co klienti z entity vidí. Je to třída s `#[Resource]`, která vyjmenuje pole k zobrazení a deklaruje jen to, čím se od entity liší:
+Resource je třída s `#[Resource]`, nalezená ve jmenném prostoru z `apiQuery.resources`. Vyjmenuje pole k zobrazení a deklaruje jen to, čím se od entity liší:
 
 ```php
 use Phlox\ApiQuery\Attributes\Field;
@@ -140,12 +135,14 @@ final readonly class UserResource
     public function __construct(
         #[Field('email', searchable: true)] public string $login,                // pod jiným názvem
         #[Field(filterable: false)] public ?string $previewToken = null,         // lze číst, ne filtrovat ani řadit
-        public ?RoleResource $role = null,                                       // relace
+        public ?Role $role = null,                                               // relace, zobrazená tak jako Role
         #[Field('activeOrders')] public array $purchases = [],                   // relace pod jiným názvem
     ) {
     }
 }
 ```
+
+Relace se deklaruje s typem toho, kam vede: s Resource, nebo s entitou, která se pak zobrazí jako její vlastní Resource, a bez ní výchozím způsobem. Dosáhnout lze jen na deklarované relace a hvězdička na relaci nedosáhne nikdy. Když nějakou chcete vynechat, prostě ji nedeklarujte.
 
 | `fields` | Na co dotaz dosáhne |
 |---|---|
@@ -155,9 +152,70 @@ final readonly class UserResource
 
 Typy a popisy vyjmenovaných polí se berou z entity. To, co třída deklaruje, má přednost před vyjmenovaným polem stejného názvu, a s hvězdičkou se vlastnost deklarovaná pod jiným názvem nezobrazí zároveň i pod svým.
 
-Klienti používají názvy z Resource a nic dalšího z entity pro ně neexistuje. Hvězdička nikdy nedosáhne na relace, takže relace musí být deklarovaná a jejím typem musí být jiná Resource. Když ji chcete vynechat, prostě ji nedeklarujte.
+Klienti používají názvy z Resource a nic dalšího z entity pro ně neexistuje.
 
-Chyba v Resource, třeba pole, které entita nemá, pole jen pro zápis nebo překlep v `except`, je výjimka pro vás, ne chyba pro klienta.
+Chyba v Resource, třeba pole, které entita nemá, pole jen pro zápis, překlep v `except` nebo relace s typem Resource jiné entity, je výjimka pro vás, ne chyba pro klienta.
+
+Za entitu stojí jedna Resource. Dvě v `apiQuery.resources` skončí při kompilaci kontejneru chybou, pokud všechny kromě jedné nemají `#[Resource(..., default: false)]`. Takový jiný pohled se použije jen tam, kde ho uvede `#[QueryOf]` nebo `process()`.
+
+### Co lze číst
+
+Veřejná statická metoda `restrict()` v Resource omezuje, co z její entity lze číst. Dostane výběr a za ním služby podle typu:
+
+```php
+use Nette\Security\User;
+use Phlox\EntityDatabase\Database\Table\Selection;
+
+#[Resource(Project::class, fields: '*')]
+final readonly class ProjectResource
+{
+    public static function restrict(Selection $projects, User $user): void
+    {
+        if (!$user->isInRole('admin')) {
+            $projects->where('owner_id', $user->getId());
+        }
+    }
+}
+```
+
+Platí všude, kde se projekty čtou:
+
+- v kořeni a v `total`,
+- v kolekci jiného záznamu, třeba `owner.projects`,
+- u jednoho záznamu přes relaci, třeba `task.project`, který je null, když ho číst nelze,
+- ve filtru a řazení přes relaci, které by jinak prozradily, co je v záznamech, jež klient číst nesmí.
+
+Entita potřebuje jednoduchý primární klíč, protože poslední dva případy ho použijí v poddotazu. Služby se berou z kontejneru, takže z něj musí pocházet i `Processor`.
+
+### Dopočítaná pole
+
+Pole bez vlastnosti na entitě je `#[Computed]` a počítá ho veřejná statická metoda stejného jména jako pole, nebo ta uvedená. Dostane entitu a za ní služby podle typu:
+
+```php
+use Phlox\ApiQuery\Attributes\Computed;
+
+#[Resource(Task::class, fields: '*')]
+final readonly class TaskResource
+{
+    public function __construct(
+        #[Computed] public ?bool $canEdit = null,
+        #[Computed('makeLabel')] public string $label = '',
+    ) {
+    }
+
+    public static function canEdit(Task $task, User $user): bool
+    {
+        return $user->isInRole('admin') || $task->assigneeId === $user->getId();
+    }
+
+    public static function makeLabel(Task $task): string
+    {
+        return "#{$task->id} {$task->title}";
+    }
+}
+```
+
+Spočítá se, jen když ho dotaz vybere, jménem nebo hvězdičkou, a nelze podle něj filtrovat ani řadit. Metoda může číst z entity cokoli, proto se záznam pak čte se všemi sloupci.
 
 Resource říká jen to, co jde ven. Pro data z požadavku použijte třídu s `#[Dto]`, viz [Ukládání dat](https://github.com/phloxcz/rest-api/blob/master/README.cs.md#ukládání-dat):
 
@@ -171,42 +229,7 @@ Resource říká jen to, co jde ven. Pro data z požadavku použijte třídu s `
 | Omezení | nekontrolují se | kontrolují se |
 | Relace | jako stránka nebo objekt | obyčejný seznam nebo objekt |
 
-#### Resource pro celou aplikaci
-
-`#[QueryOf]` platí pro jeden parametr a parametr bez něj dostane celou entitu. Aby Resource platila pro entitu všude, uveďte to v konfiguraci:
-
-```neon
-apiQuery:
-    entities:
-        App\Entity\File:
-            resource: App\Api\FileResource
-```
-
-Obyčejné `Query` nad `File` se pak řídí Resource a stejně tak i cesta k `File` přes relaci jiné entity, v `select`, `filter` i `sort`. Uvedení entity to neobejde. Pokud se má jedno místo lišit, uveďte jinou Resource v `#[QueryOf]` nebo `process()`. Tak se také parametr zdokumentuje, protože obyčejné `Query` neví, čeho se bude týkat.
-
-Entita s Resource tady nemůže mít `relations` ani `computed`, protože ty deklaruje Resource.
-
-Pole bez vlastnosti na entitě je `#[Computed]` a lze ho vybrat, ale ne podle něj filtrovat ani řadit:
-
-```php
-use Phlox\ApiQuery\Attributes\Computed;
-
-#[Resource(User::class)]
-final readonly class UserResource
-{
-    public function __construct(
-        public int $id,
-        #[Computed('makeLabel')] public string $label,   // podle metody níže
-        #[Computed] public ?bool $canManage = null,      // z onProcessedEntity, kde lze použít služby
-    ) {
-    }
-
-    public static function makeLabel(User $user): string
-    {
-        return "{$user->fullName} <{$user->email}>";
-    }
-}
-```
+### Co jde ven
 
 `process()` vrací pole, ne instance Resource, protože dotaz obvykle vybírá jen některá pole. Ze stejného důvodu není žádné pole Resource v dokumentaci povinné. Resource se dokumentuje podle toho, co z ní skutečně vychází, takže kolekce je stránka, ať je deklarovaná s jakýmkoli typem.
 
@@ -243,11 +266,10 @@ public function report(#[QueryOfSql(['id' => new SqlField('id', Field::Integer),
 
 ### Přepsání
 
-`process()` přijímá totéž i přímo a má přednost před `#[QueryOf]`:
+`process()` přijímá Resource i přímo a ta má přednost před `#[QueryOf]`:
 
 ```php
-$this->processor->process($selection, $query, UserResource::class);
-$this->processor->process($selection, $query, relations: ['role']);
+$this->processor->process($selection, $query, UserListResource::class);
 ```
 
 ## Jazyk
@@ -346,11 +368,16 @@ Pro export může aplikace limity řádků zrušit. `process($selection, $query,
 
 ## Události
 
-```php
-$processor->onSelection[] = function (ProcessSelectionEventData $event): void {
-    // Před čtením kolekce, na každé úrovni; pro řízení přístupu
-    $event->selection->where('company_id', $this->user->companyId);
-};
+Události jsou pro to, co Resource neřekne. Co lze číst, patří do [`restrict()`](#co-lze-číst), které platí i ve filtrech a řazení přes relace, kde událost neplatí.
+
+Posluchače registrujte jednou, v konfiguraci. Procesor je sdílená služba, takže posluchač přidaný ve `startup()` controlleru se přidává znovu při každém volání, třeba pro každé volání v dávce JSON-RPC:
+
+```neon
+services:
+    auditListener: App\Api\AuditListener
+    apiQuery.processor:
+        setup:
+            - '$onProcessedEntity[]' = [@auditListener, onProcessedEntity]
 ```
 
 | Událost | Co může |
@@ -365,7 +392,7 @@ Událost dostane entitu a může z ní číst cokoli, i to, co dotaz nevybral. D
 
 `$event->selection->getEntityName()` řekne, jaké entity se kolekce týká.
 
-**Filtr přes relaci neprochází přes `onSelection`.** Říká jen to, zda záznam odpovídá, ale i tím může prozradit obsah kolekce, kterou klient nesmí číst. Nepovolujte relaci, jejíž řádky omezují přístupová práva jen v této události: uveďte omezení jako `condition:` relace, které platí i ve filtrech, nebo použijte Resource bez ní.
+`onSelection` se nevolá pro filtr ani řazení přes relaci, ani pro jeden záznam, ke kterému se dotaz dostane přes relaci. Proto řízení přístupu patří do `restrict()`.
 
 ## Dokumentace
 
@@ -402,8 +429,9 @@ Celý postup je v [`MIGRATION.cs.md`](https://github.com/phloxcz/api-core/blob/m
 Formát dotazů zůstává, včetně `criteria`, `take`, `skip` a operátorů. Změny, které je potřeba v existujícím projektu zkontrolovat:
 
 - **Odpověď kolekce má jeden tvar,** ten z `pagination: true`: `{data, total, ...}` na každé úrovni a obyčejný seznam se `skipLimitOffset`. S `pagination: auto` nebo `false` se tím mění, co klienti dostávají. `$this->processor->process()` si `skipLimitOffset` ponechává se stejným významem: `true` se týká kořene a seznam uvádí cesty s tečkami.
-- **Relace musí být povolené.** Dotaz na relaci neuvedenou v `apiQuery.entities`, `relations` nebo Resource dostane `400`. V `apiQuery.entities` vyjmenujte, co vaši klienti používají.
-- **Neexistující názvy v `select` dostanou `400`,** včetně toho, co přidává událost. Uveďte to v `computed`.
+- **Na co dotaz dosáhne, je v Resource.** Entita, na kterou se klienti ptají i s relacemi, dostane Resource, která je deklaruje, a entita bez ní ukáže své sloupce a žádné relace. Dotaz na cokoli jiného dostane `400`. Jmenný prostor Resource uveďte v `apiQuery.resources`.
+- **Řízení přístupu se přesouvá do `restrict()` v Resource,** z `onSelection`, a dopočítaná pole do metody v Resource, z `onProcessedEntity` se `set`. Obojí dostane služby jako parametry.
+- **Neexistující názvy v `select` dostanou `400`,** včetně toho, co přidává událost. Udělejte z toho pole `#[Computed]`.
 - **Špatné názvy dostanou `400`.** Neznámá pole se dřív tiše přeskakovala, i ve filtrech, které pak vracely víc řádků, než měly. Zkontrolujte pole, která posílají vaše gridy.
 - **Špatné hodnoty dostanou `400`,** třeba text místo čísla, a stejně tak textové operátory na čemkoli jiném než textu, jako `contains` na čísle. Neznámé operátory a směry dřív skončily výjimkou, nebo prošly.
 - **`access: w` je skryté všude.** Dřív bylo skryté jen v `select`, zatímco filtrování, řazení i hledání podle něj fungovalo. Podle sloupce ponechaného jako `rw` a maskovaného událostí, třeba hesla, se pořád dá filtrovat, jako vždycky. Změňte ho na `w` a maskování odstraňte, protože čtení takové vlastnosti vyhodí výjimku.

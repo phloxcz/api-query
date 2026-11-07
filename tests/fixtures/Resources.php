@@ -97,6 +97,11 @@ final readonly class ComputedResource
         // Reads what the query didn't select
         return "{$user->email} ({$user->age})";
     }
+
+    public static function canManage(User $user): bool
+    {
+        return $user->isActive;
+    }
 }
 
 #[Resource(User::class)]
@@ -135,6 +140,70 @@ final readonly class BadSecret
 final readonly class BadScalar
 {
     public function __construct(public RoleResource $email)
+    {
+    }
+}
+
+/**
+ * All columns, and relations to entities shown by default as well as to resources.
+ */
+#[Resource(User::class, fields: '*', default: false)]
+final readonly class TreeUser
+{
+    /**
+     * @param list<TreeOrder> $orders
+     * @param list<TreeOrder> $activeOrders
+     */
+    public function __construct(
+        public ?Role $role = null,
+        public array $orders = [],
+        public array $activeOrders = [],
+    ) {
+    }
+}
+
+#[Resource(Order::class, fields: '*', default: false)]
+final readonly class TreeOrder
+{
+    /**
+     * @param list<Item> $items
+     */
+    public function __construct(
+        public ?TreeUser $user = null,
+        public array $items = [],
+    ) {
+    }
+}
+
+/** Columns of the entity, its role, and orders with their items. */
+#[Resource(User::class, fields: '*', default: false)]
+final readonly class UserWithOrders
+{
+    /**
+     * @param list<OrderWithItems> $orders
+     */
+    public function __construct(
+        public ?Role $role = null,
+        public array $orders = [],
+    ) {
+    }
+}
+
+#[Resource(Order::class, fields: '*', default: false)]
+final readonly class OrderWithItems
+{
+    /**
+     * @param list<Item> $items
+     */
+    public function __construct(public array $items = [])
+    {
+    }
+}
+
+#[Resource(User::class)]
+final readonly class WrongTarget
+{
+    public function __construct(public ?ItemResource $role = null)
     {
     }
 }

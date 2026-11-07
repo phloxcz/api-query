@@ -37,11 +37,8 @@ final class Extension extends Nette\DI\CompilerExtension
             'maxDepth' => Expect::int($defaults->maxDepth)->min(0),
             'maxRows' => Expect::int($defaults->maxRows)->min(1),
             'ignoreDiacritics' => Expect::bool($defaults->ignoreDiacritics),
-            'entities' => Expect::arrayOf(Expect::structure([
-                'relations' => Expect::listOf('string'),
-                'computed' => Expect::arrayOf('string', 'string'),
-                'resource' => Expect::string()->nullable(),
-            ])->castTo('array'), 'string'),
+            'resources' => Expect::anyOf(Expect::string(), Expect::listOf('string'))->default([]),
+            'entities' => Expect::mixed(), // gone, refused with what replaces it
             'dateTimeFormat' => Expect::string($defaults->dateTimeFormat),
             'dateFormat' => Expect::string($defaults->dateFormat),
             'timeFormat' => Expect::string($defaults->timeFormat),
@@ -53,12 +50,32 @@ final class Extension extends Nette\DI\CompilerExtension
     {
         $builder = $this->getContainerBuilder();
 
-        // Documents are generated when the container compiles, from what's configured here
-        FieldMap::configureEntities($this->config->entities);
+        if ($this->config->entities !== null) {
+            throw new Nette\DI\InvalidConfigurationException(
+                "apiQuery.entities is gone. Give an entity a #[Resource], with its relations and computed fields, and name "
+                . "the namespace of resources in apiQuery.resources. An entity without one is shown with all its columns and no relations.",
+            );
+        }
+
+        $finder = new ResourceFinder();
+        $resources = $finder->find(array_values(array_map(strval(...), (array) $this->config->resources)));
+        foreach ($resources as $resource) {
+            $builder->addDependency(new \ReflectionClass($resource));
+        }
+        foreach (array_unique($finder->directories) as $directory) {
+            $builder->addDependency($directory); // a resource added there
+        }
+
+        // Documents are generated when the container compiles, from what's found here
+        FieldMap::configureResources($resources);
         self::registerEntityDescriber();
 
+        $settings = (array) $this->config;
+        unset($settings['entities']);
+        $settings['resources'] = $resources;
+
         $config = $builder->addDefinition($this->prefix('config'))
-            ->setFactory(QueryConfig::class, (array) $this->config)
+            ->setFactory(QueryConfig::class, $settings)
             ->setAutowired(false);
 
         $builder->addDefinition($this->prefix('processor'))

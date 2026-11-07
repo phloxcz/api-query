@@ -19,6 +19,9 @@ use Phlox\ApiQuery\Tests\Fixtures\Resources\BadField;
 use Phlox\ApiQuery\Tests\Fixtures\Resources\BadRelation;
 use Phlox\ApiQuery\Tests\Fixtures\Resources\BadScalar;
 use Phlox\ApiQuery\Tests\Fixtures\Resources\BadSecret;
+use Phlox\ApiQuery\Tests\Fixtures\Resources\TreeOrder;
+use Phlox\ApiQuery\Tests\Fixtures\Resources\TreeUser;
+use Phlox\ApiQuery\Tests\Fixtures\Resources\WrongTarget;
 use Phlox\ApiQuery\Tests\Fixtures\Resources\UserResource;
 use Phlox\EntityDatabase\Database\Explorer;
 use Tester\Assert;
@@ -233,7 +236,7 @@ Assert::equal(
     $errors(['select' => 'a', 'filter' => ['field' => 'b', 'value' => 1], 'sort' => [['field' => 'c']]]),
 );
 
-// --- A relation has to be allowed
+// --- An entity without a resource has no relations
 
 $notAllowed = ['select.role' => $secret];
 Assert::same($notAllowed, $errors(['select' => 'id,role(id)']));
@@ -244,25 +247,19 @@ Assert::same(['filter.role.name' => $secret, 'filter.orders.status' => $secret],
     ['field' => 'role.name', 'value' => 'x'],
     ['field' => 'orders.status', 'value' => 'x'],
 ]]));
-Assert::same(['select.orders.user' => $secret], $errors(['select' => 'orders(user)'], relations: ['orders']), 'each level has to be named');
-Assert::same(['filter.orders.items.name' => $secret], $errors(['filter' => ['field' => 'orders.items.name', 'value' => 'x']], relations: ['orders']));
 
-// A mistake in the code isn't the client's
-Assert::exception(static fn() => $run(['select' => 'id'], relations: ['nothing']), LogicException::class, '%A%no relation \'nothing\'%A%');
-Assert::exception(static fn() => $run(['select' => 'id'], relations: ['email']), LogicException::class, '%A%no relation \'email\'%A%');
+// --- Relations, of a resource: to another resource, or to an entity shown by default
 
-// --- Relations
-
-$relations = ['role', 'orders.items', 'activeOrders'];
-
-$withRole = $run(['select' => 'id,role(name)', 'pageSize' => 3], relations: $relations)['data'];
+$withRole = $run(['select' => 'id,role(name)', 'pageSize' => 3], of: TreeUser::class)['data'];
 Assert::same(['id' => 1, 'role' => ['name' => 'admin']], $withRole[0]);
 Assert::same(['id' => 3, 'role' => null], $withRole[2], 'no record');
 
-$alone = $run(['select' => 'role', 'pageSize' => 1], relations: $relations)['data'][0];
+$alone = $run(['select' => 'role', 'pageSize' => 1], of: TreeUser::class)['data'][0];
 Assert::same(['role' => ['id' => 1, 'name' => 'admin']], $alone, 'a relation named alone means all of its fields');
+Assert::same(['select.role.users' => $secret], $errors(['select' => 'role(users)'], of: TreeUser::class), 'an entity shown by default has no relations');
+Assert::same(['filter.role.users.id' => $secret], $errors(['filter' => ['field' => 'role.users.id', 'value' => 1]], of: TreeUser::class));
 
-$nested = $run(['select' => 'id,orders(id,items(name))', 'pageSize' => 2], relations: $relations)['data'];
+$nested = $run(['select' => 'id,orders(id,items(name))', 'pageSize' => 2], of: TreeUser::class)['data'];
 Assert::same([1, 2, 3], array_column($nested[0]['orders']['data'], 'id'), 'a page, as at the root');
 Assert::same(['data', 'total', 'page', 'pageSize', 'from', 'to'], array_keys($nested[0]['orders']));
 Assert::same(3, $nested[0]['orders']['total']);
@@ -272,77 +269,77 @@ Assert::same(0, $nested[0]['orders']['data'][2]['items']['total']);
 Assert::same([4], array_column($nested[1]['orders']['data'], 'id'));
 Assert::same([['name' => 'apple']], $nested[1]['orders']['data'][0]['items']['data']);
 
-Assert::same([1, 2], array_column($run(['select' => 'activeOrders(id)', 'pageSize' => 1], relations: $relations)['data'][0]['activeOrders']['data'], 'id'), 'the condition of a relation holds');
+Assert::same([1, 2], array_column($run(['select' => 'activeOrders(id)', 'pageSize' => 1], of: TreeUser::class)['data'][0]['activeOrders']['data'], 'id'), 'the condition of a relation holds');
 
 // Criteria of nested collections, with more parents than one
-$sorted = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['sort' => [['field' => 'id', 'dir' => 'desc']]]]], relations: $relations)['data'];
+$sorted = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['sort' => [['field' => 'id', 'dir' => 'desc']]]]], of: TreeUser::class)['data'];
 Assert::same([3, 2, 1], array_column($sorted[0]['orders']['data'], 'id'));
 
-$paged = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['pageSize' => 2, 'page' => 1]]], relations: $relations)['data'];
+$paged = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['pageSize' => 2, 'page' => 1]]], of: TreeUser::class)['data'];
 Assert::same([1, 2], array_column($paged[0]['orders']['data'], 'id'), 'a limit per parent');
 Assert::same(3, $paged[0]['orders']['total'], 'and the total of that parent');
 Assert::same([4], array_column($paged[1]['orders']['data'], 'id'));
 Assert::same(1, $paged[1]['orders']['total']);
 
-$secondPage = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['pageSize' => 2, 'page' => 2]]], relations: $relations)['data'];
+$secondPage = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['pageSize' => 2, 'page' => 2]]], of: TreeUser::class)['data'];
 Assert::same([3], array_column($secondPage[0]['orders']['data'], 'id'), 'an offset too, which Nette loses');
 Assert::same(2, $secondPage[0]['orders']['page']);
 Assert::same(2, $secondPage[0]['orders']['from']);
 Assert::same([], $secondPage[1]['orders']['data']);
 Assert::null($secondPage[1]['orders']['from']);
 
-$nestedFilter = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['filter' => ['field' => 'status', 'value' => 'paid']]]], relations: $relations)['data'];
+$nestedFilter = $run(['select' => 'id,orders(id)', 'pageSize' => 2, 'criteria' => ['orders' => ['filter' => ['field' => 'status', 'value' => 'paid']]]], of: TreeUser::class)['data'];
 Assert::same([2], array_column($nestedFilter[0]['orders']['data'], 'id'));
 Assert::same([4], array_column($nestedFilter[1]['orders']['data'], 'id'));
 
-$deep = $run(['select' => 'id,orders(id,items(id))', 'pageSize' => 1, 'criteria' => ['orders/items' => ['filter' => ['field' => 'name', 'value' => 'pear']]]], relations: $relations)['data'][0];
+$deep = $run(['select' => 'id,orders(id,items(id))', 'pageSize' => 1, 'criteria' => ['orders/items' => ['filter' => ['field' => 'name', 'value' => 'pear']]]], of: TreeUser::class)['data'][0];
 Assert::same([['id' => 2]], $deep['orders']['data'][0]['items']['data']);
 
-Assert::same(['criteria.orders' => 'is not a selected collection.'], $errors(['select' => 'id', 'criteria' => ['orders' => ['pageSize' => 1]]], relations: $relations));
-Assert::same(['criteria.role' => 'is not a selected collection.'], $errors(['select' => 'role(id)', 'criteria' => ['role' => ['pageSize' => 1]]], relations: $relations));
-Assert::same(['orders/filter.nothing' => $secret], $errors(['select' => 'orders(id)', 'criteria' => ['orders' => ['filter' => ['field' => 'nothing', 'value' => 1]]]], relations: $relations));
+Assert::same(['criteria.orders' => 'is not a selected collection.'], $errors(['select' => 'id', 'criteria' => ['orders' => ['pageSize' => 1]]], of: TreeUser::class));
+Assert::same(['criteria.role' => 'is not a selected collection.'], $errors(['select' => 'role(id)', 'criteria' => ['role' => ['pageSize' => 1]]], of: TreeUser::class));
+Assert::same(['orders/filter.nothing' => $secret], $errors(['select' => 'orders(id)', 'criteria' => ['orders' => ['filter' => ['field' => 'nothing', 'value' => 1]]]], of: TreeUser::class));
 
 // Criteria of what wasn't reached are still checked
-Assert::same(['orders/sort.nothing' => $secret], $errors(['select' => 'orders(id)', 'filter' => ['field' => 'id', 'value' => 999], 'criteria' => ['orders' => ['sort' => [['field' => 'nothing']]]]], relations: $relations));
+Assert::same(['orders/sort.nothing' => $secret], $errors(['select' => 'orders(id)', 'filter' => ['field' => 'id', 'value' => 999], 'criteria' => ['orders' => ['sort' => [['field' => 'nothing']]]]], of: TreeUser::class));
 
 // --- Filtering and sorting through relations
 
-Assert::same([1, 4], $ids($run(['select' => 'id', 'filter' => ['field' => 'role.name', 'value' => 'admin']], relations: $relations)));
-Assert::same([1, 4], $ids($run(['select' => 'id', 'filter' => ['field' => 'role.name', 'operator' => 'contains', 'value' => 'ADM']], relations: $relations)));
+Assert::same([1, 4], $ids($run(['select' => 'id', 'filter' => ['field' => 'role.name', 'value' => 'admin']], of: TreeUser::class)));
+Assert::same([1, 4], $ids($run(['select' => 'id', 'filter' => ['field' => 'role.name', 'operator' => 'contains', 'value' => 'ADM']], of: TreeUser::class)));
 
-$paid = $run(['select' => 'id', 'filter' => ['field' => 'orders.status', 'operator' => 'in', 'value' => ['new', 'paid']]], relations: $relations);
+$paid = $run(['select' => 'id', 'filter' => ['field' => 'orders.status', 'operator' => 'in', 'value' => ['new', 'paid']]], of: TreeUser::class);
 Assert::same([1, 2], $ids($paid), 'a record with several matches comes once');
 Assert::same(2, $paid['total'], 'and counts once');
 
-Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.items.name', 'value' => 'pear']], relations: $relations)));
-Assert::same([1, 2], $ids($run(['select' => 'id', 'filter' => ['field' => ':orders.items.name', 'value' => 'apple']], relations: $relations)), 'as older clients write it');
+Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.items.name', 'value' => 'pear']], of: TreeUser::class)));
+Assert::same([1, 2], $ids($run(['select' => 'id', 'filter' => ['field' => ':orders.items.name', 'value' => 'apple']], of: TreeUser::class)), 'as older clients write it');
 
-Assert::same([], $ids($run(['select' => 'id', 'filter' => ['field' => 'activeOrders.status', 'value' => 'cancelled']], relations: $relations)), 'the condition of a relation holds in a filter too');
-Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.status', 'value' => 'cancelled']], relations: $relations)));
+Assert::same([], $ids($run(['select' => 'id', 'filter' => ['field' => 'activeOrders.status', 'value' => 'cancelled']], of: TreeUser::class)), 'the condition of a relation holds in a filter too');
+Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.status', 'value' => 'cancelled']], of: TreeUser::class)));
 
-Assert::contains('name a field', $errors(['filter' => ['field' => 'role', 'value' => 1]], relations: $relations)['filter.role']);
-Assert::same(['filter.email.x' => $secret], $errors(['filter' => ['field' => 'email.x', 'value' => 1]], relations: $relations));
-Assert::same(['filter.role.nothing' => $secret], $errors(['filter' => ['field' => 'role.nothing', 'value' => 1]], relations: $relations));
+Assert::contains('name a field', $errors(['filter' => ['field' => 'role', 'value' => 1]], of: TreeUser::class)['filter.role']);
+Assert::same(['filter.email.x' => $secret], $errors(['filter' => ['field' => 'email.x', 'value' => 1]], of: TreeUser::class));
+Assert::same(['filter.role.nothing' => $secret], $errors(['filter' => ['field' => 'role.nothing', 'value' => 1]], of: TreeUser::class));
 
-$byRole = $ids($run(['select' => 'id', 'sort' => [['field' => 'role.name', 'dir' => 'desc'], ['field' => 'id']], 'filter' => ['field' => 'role.name', 'operator' => 'isnotnull']], relations: $relations));
+$byRole = $ids($run(['select' => 'id', 'sort' => [['field' => 'role.name', 'dir' => 'desc'], ['field' => 'id']], 'filter' => ['field' => 'role.name', 'operator' => 'isnotnull']], of: TreeUser::class));
 Assert::same([2, 1, 4], $byRole, 'sorted through a relation');
-Assert::contains('collection', $errors(['sort' => [['field' => 'orders.id']]], relations: $relations)['sort.orders.id']);
-Assert::contains('can not be sorted', $errors(['sort' => [['field' => 'role']]], relations: $relations)['sort.role']);
+Assert::contains('collection', $errors(['sort' => [['field' => 'orders.id']]], of: TreeUser::class)['sort.orders.id']);
+Assert::contains('can not be sorted', $errors(['sort' => [['field' => 'role']]], of: TreeUser::class)['sort.role']);
 
 // A write-only column can't be reached through a relation either
 Assert::same(['filter.user.passwordHash' => $secret], (function () use ($processor, $explorer) {
-    $e = Assert::exception(static fn() => $processor->process($explorer->table('orders'), Query::create(['filter' => ['field' => 'user.passwordHash', 'value' => 'x']]), relations: ['user']), QueryException::class);
+    $e = Assert::exception(static fn() => $processor->process($explorer->table('orders'), Query::create(['filter' => ['field' => 'user.passwordHash', 'value' => 'x']]), TreeOrder::class), QueryException::class);
     return $e->getData()['fields'];
 })());
 Assert::same(['select.user.passwordHash' => $secret], (function () use ($processor, $explorer) {
-    $e = Assert::exception(static fn() => $processor->process($explorer->table('orders'), Query::create(['select' => 'user(passwordHash)']), relations: ['user']), QueryException::class);
+    $e = Assert::exception(static fn() => $processor->process($explorer->table('orders'), Query::create(['select' => 'user(passwordHash)']), TreeOrder::class), QueryException::class);
     return $e->getData()['fields'];
 })());
 
 // --- Depth
 
-Assert::contains('nested too deep', $errors(['select' => 'orders(user(orders(user(id))))'], relations: ['orders.user.orders.user'])['select.orders.user.orders.user']);
-Assert::contains('too many relations', $errors(['filter' => ['field' => 'orders.user.orders.user.id', 'value' => 1]], relations: ['orders.user.orders.user'])['filter.orders.user.orders.user.id']);
+Assert::contains('nested too deep', $errors(['select' => 'orders(user(orders(user(id))))'], of: TreeUser::class)['select.orders.user.orders.user']);
+Assert::contains('too many relations', $errors(['filter' => ['field' => 'orders.user.orders.user.id', 'value' => 1]], of: TreeUser::class)['filter.orders.user.orders.user.id']);
 
 // --- Search
 
@@ -365,39 +362,39 @@ $tightRun = static fn(array $query, mixed ...$options): ?array => $tight->proces
 
 Assert::same(2, $tightRun(['select' => 'id', 'pageSize' => 100])['pageSize']);
 Assert::same([1, 2], array_column($tightRun(['select' => 'id'])['data'], 'id'));
-Assert::same(2, count($tightRun(['select' => 'orders(id)'], relations: ['orders'])['data'][0]['orders']['data']), 'nested collections are cut as well');
+Assert::same(2, count($tightRun(['select' => 'orders(id)'], of: TreeUser::class)['data'][0]['orders']['data']), 'nested collections are cut as well');
 
 $e = Assert::exception(static fn() => (new Processor(new QueryConfig(maxRows: 3)))->process($users(), Query::create(['select' => 'id'])), QueryException::class);
 Assert::contains('too many rows', $e->getData()['fields']['select']);
 
-$e = Assert::exception(static fn() => (new Processor(new QueryConfig(maxRows: 5)))->process($users(), Query::create(['select' => 'id,orders(id)']), relations: ['orders']), QueryException::class);
+$e = Assert::exception(static fn() => (new Processor(new QueryConfig(maxRows: 5)))->process($users(), Query::create(['select' => 'id,orders(id)']), of: TreeUser::class), QueryException::class);
 Assert::contains('too many rows', $e->getData()['fields']['select.orders'], 'counted before they are loaded');
 
-$e = Assert::exception(static fn() => $tightRun(['select' => 'orders(user(id))'], relations: ['orders.user']), QueryException::class);
+$e = Assert::exception(static fn() => $tightRun(['select' => 'orders(user(id))'], of: TreeUser::class), QueryException::class);
 Assert::contains('nested too deep', $e->getData()['fields']['select.orders.user']);
 
 // What the application decides
-$export = (new Processor(new QueryConfig(maxPageSize: 2, maxRows: 1)))->process($users(), Query::create(['select' => 'id,orders(id)', 'pageSize' => 1]), relations: ['orders'], skipLimitOffset: true);
+$export = (new Processor(new QueryConfig(maxPageSize: 2, maxRows: 1)))->process($users(), Query::create(['select' => 'id,orders(id)', 'pageSize' => 1]), of: TreeUser::class, skipLimitOffset: true);
 Assert::true(array_is_list($export), 'no limit means a list');
 Assert::count(4, $export);
 Assert::count(2, $export[0]['orders']['data'], 'true is about the root, what is nested keeps its limit');
 Assert::same(3, $export[0]['orders']['total']);
 
-$partly = (new Processor(new QueryConfig(maxPageSize: 2)))->process($users(), Query::create(['select' => 'id,orders(id)']), relations: ['orders'], skipLimitOffset: ['orders']);
+$partly = (new Processor(new QueryConfig(maxPageSize: 2)))->process($users(), Query::create(['select' => 'id,orders(id)']), of: TreeUser::class, skipLimitOffset: ['orders']);
 Assert::count(2, $partly['data'], 'the root has its limit');
 Assert::count(3, $partly['data'][0]['orders'], 'the collection does not, and it is a list');
 
-$rootOnly = (new Processor(new QueryConfig(maxPageSize: 2)))->process($users(), Query::create(['select' => 'id,orders(id)']), relations: ['orders'], skipLimitOffset: ['@']);
+$rootOnly = (new Processor(new QueryConfig(maxPageSize: 2)))->process($users(), Query::create(['select' => 'id,orders(id)']), of: TreeUser::class, skipLimitOffset: ['@']);
 Assert::count(4, $rootOnly);
 Assert::count(2, $rootOnly[0]['orders']['data']);
 
-$dotted = (new Processor(new QueryConfig(maxPageSize: 1)))->process($users()->get(1), Query::create(['select' => 'orders(items(name))']), relations: ['orders.items'], skipLimitOffset: ['orders', 'orders.items']);
+$dotted = (new Processor(new QueryConfig(maxPageSize: 1)))->process($users()->get(1), Query::create(['select' => 'orders(items(name))']), of: TreeUser::class, skipLimitOffset: ['orders', 'orders.items']);
 Assert::count(3, $dotted['orders'], 'a path written with dots');
 Assert::same([['name' => 'apple'], ['name' => 'pear']], $dotted['orders'][0]['items']);
 
 // --- One record, and none
 
-$one = $processor->process($users()->get(1), Query::create(['select' => 'id,email,role(name),orders(id)', 'criteria' => ['orders' => ['pageSize' => 1, 'sort' => [['field' => 'id', 'dir' => 'desc']]]]]), relations: $relations);
+$one = $processor->process($users()->get(1), Query::create(['select' => 'id,email,role(name),orders(id)', 'criteria' => ['orders' => ['pageSize' => 1, 'sort' => [['field' => 'id', 'dir' => 'desc']]]]]), of: TreeUser::class);
 Assert::same('ann@example.com', $one['email']);
 Assert::same(['name' => 'admin'], $one['role']);
 Assert::same([['id' => 3]], $one['orders']['data']);
@@ -424,7 +421,7 @@ $events->onSelection[] = static function (ProcessSelectionEventData $event): voi
         $event->selection->where('status <> ?', 'new');
     }
 };
-$acl = $events->process($users(), Query::create(['select' => 'id,orders(id)']), relations: ['orders']);
+$acl = $events->process($users(), Query::create(['select' => 'id,orders(id)']), of: TreeUser::class);
 Assert::same(2, $acl['total'], 'conditions of the event count in the total');
 Assert::same([1, 2], $ids($acl));
 Assert::same([2, 3], array_column($acl['data'][0]['orders']['data'], 'id'), 'also on nested collections');
@@ -433,7 +430,7 @@ $skip = new Processor();
 $skip->onSelection[] = static function (ProcessSelectionEventData $event): void {
     $event->shouldSkip = $event->path === ['orders'];
 };
-$skipped = $skip->process($users(), Query::create(['select' => 'id,orders(id)', 'pageSize' => 1]), relations: ['orders'])['data'][0];
+$skipped = $skip->process($users(), Query::create(['select' => 'id,orders(id)', 'pageSize' => 1]), of: TreeUser::class)['data'][0];
 Assert::same(['id' => 1], $skipped, 'a collection left out');
 
 $skipRoot = new Processor();
@@ -509,5 +506,5 @@ Assert::exception(static fn() => $processor->process($users(), Query::create(), 
 Assert::exception(static fn() => $processor->process($users(), Query::create(), BadRelation::class), LogicException::class, '%A%is a relation%A%');
 Assert::exception(static fn() => $processor->process($users(), Query::create(), BadScalar::class), LogicException::class, '%A%not a relation%A%');
 Assert::exception(static fn() => $processor->process($explorer->table('roles'), Query::create(), UserResource::class), LogicException::class, '%A%was given%A%');
-Assert::exception(static fn() => $processor->process($users(), Query::create(), UserResource::class, ['role']), LogicException::class, '%A%declares its own relations%A%');
+Assert::exception(static fn() => $processor->process($users(), Query::create(['select' => 'role']), WrongTarget::class), LogicException::class, "%A%leads to Phlox\\ApiQuery\\Tests\\Fixtures\\Entity\\Role, but its type is a #[Resource] of Phlox\\ApiQuery\\Tests\\Fixtures\\Entity\\Item.");
 Assert::exception(static fn() => $processor->process($users(), Query::create(), stdClass::class), LogicException::class, '%A%neither an entity%A%');

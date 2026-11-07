@@ -23,29 +23,27 @@ use Phlox\ApiQuery\Fields\FieldMap;
 /**
  * Says what a Query parameter is about, for the Processor and the documentation.
  *
- *     public function list(#[QueryOf(UserResource::class)] Query $query): array
- *     public function list(#[QueryOf(User::class, relations: ['role', 'orders.items'])] Query $query): array
+ *     public function list(#[QueryOf(UserListResource::class)] Query $query): array
  *
- * It's only needed for a resource, or to differ from `apiQuery.entities`.
+ * It's only needed where the query is about something else than the resource of the
+ * entity, which holds without it. It also says what's documented.
  */
 #[Attribute(Attribute::TARGET_PARAMETER)]
 final class QueryOf implements DescribesMethod
 {
     /**
      * @param class-string $class A #[Resource] or an entity
-     * @param list<string>|null $relations For an entity, the relations a query can reach; by default those of `apiQuery.entities`
      * @param bool $single The method returns one record rather than a page
      */
     public function __construct(
         public readonly string $class,
-        public readonly ?array $relations = null,
         public readonly bool $single = false,
     ) {
     }
 
     public function getFieldMap(): FieldMap
     {
-        return FieldMap::for($this->class, $this->relations);
+        return FieldMap::for($this->class);
     }
 
     public function describeParameter(): string
@@ -59,10 +57,11 @@ final class QueryOf implements DescribesMethod
             return null;
         }
 
-        $name = (new \ReflectionClass($this->class))->getShortName()
-            . ($this->relations === null ? '' : '_' . substr(md5((string) json_encode($this->relations)), 0, 6));
+        // An entity with a resource is queried as the resource
+        $map = $this->getFieldMap();
+        $name = (new \ReflectionClass($map->resource ?? $this->class))->getShortName();
 
-        return QuerySchema::describe($builder, $this->getFieldMap(), $name);
+        return QuerySchema::describe($builder, $map, $name);
     }
 
     public function describeResponse(SchemaBuilder $builder): array|\stdClass|null
@@ -73,8 +72,9 @@ final class QueryOf implements DescribesMethod
 
         $builder->addClass($this->class);
 
-        $item = FieldMap::isResource($this->class)
-            ? $builder->build(new Type(Type::ClassName, class: $this->class))
+        $resource = $this->getFieldMap()->resource;
+        $item = $resource !== null
+            ? $builder->build(new Type(Type::ClassName, class: $resource))
             : $this->getFieldMap()->toSchema($builder);
 
         return $this->single ? $item : Paged::wrap($item);

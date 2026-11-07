@@ -34,7 +34,7 @@ final readonly class Field
      * @param string|null $column Null when it isn't a column, like a virtual property or a relation
      * @param string $type One of the constants
      * @param bool $filterable Whether it can be filtered and sorted by
-     * @param bool $computed It has no property: an event, or $compute, gives its value
+     * @param bool $computed It has no property: $compute gives its value
      * @param (\Closure(\Phlox\EntityDatabase\Entity\Entity): mixed)|null $compute
      * @param array<string, mixed> $schema Added to its documentation, from #[Schema]
      */

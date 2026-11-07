@@ -26,6 +26,13 @@ use Phlox\ApiCore\Attributes\Dto;
  *
  * Fields named here take everything from the entity. What differs from it, such as a
  * relation, a new name or a limit, is declared in the constructor, and that wins.
+ *
+ * Found in the namespaces of `apiQuery.resources`, a resource stands for its entity
+ * wherever a query reaches it. Two static methods are optional, both getting services
+ * by type after their first parameter:
+ *
+ *     public static function restrict(Selection $tasks, User $user): void   // what can be read
+ *     public static function canEdit(Task $task, User $user): bool          // #[Computed] public ?bool $canEdit
  */
 #[Attribute(Attribute::TARGET_CLASS)]
 final class Resource extends Dto
@@ -35,11 +42,14 @@ final class Resource extends Dto
      * @param string|list<string>|null $fields Properties of the entity to show. A star means all readable
      *        ones but relations, so a new column shows up by itself. Null means only what the class declares
      * @param list<string> $except With a star, properties to leave out
+     * @param bool $default Whether it stands for the entity everywhere; false for another view of it,
+     *        which only #[QueryOf] names
      */
     public function __construct(
         public readonly string $entity,
         public readonly string|array|null $fields = null,
         public readonly array $except = [],
+        public readonly bool $default = true,
     ) {
         if (is_string($fields) && $fields !== '*') {
             throw new \LogicException("Fields of a resource of {$entity} are a list, or '*', not '{$fields}'.");

@@ -29,16 +29,10 @@ apiQuery:
     maxDepth: 3             # how deep a query can go through relations
     maxRows: 10000          # rows of collections in one response; a query wanting more gets 400
     ignoreDiacritics: false # needs the support of the database, see below
-    entities:               # what a query can reach, for the whole application
-        App\Entity\User:
-            relations: [role, orders]
-            computed:       # what events add, for the documentation
-                canManage: bool
-        App\Entity\Order:
-            relations: [user, items]
-        App\Entity\File:
-            resource: App\Api\FileResource   # stands for the entity everywhere, see below
+    resources: App\Api\Resource   # where resources are; a list for more namespaces
 ```
+
+There's nothing more to configure. What a query can reach is in [resources](#resources), and an entity without one is shown [by default](#an-entity-without-a-resource).
 
 ## Usage
 
@@ -58,7 +52,7 @@ class UserController extends ApiController
 }
 ```
 
-What the query can reach comes from `apiQuery.entities`. To differ from it at one place, or to use a resource, say so with `#[QueryOf]`. The same attribute gives the documentation its fields and the shape of the response.
+The query follows the resource of `User`, wherever it's used. `#[QueryOf]` is only for where one place differs, naming another resource, and to tell the documentation what a parameter is about:
 
 ```php
 use Phlox\ApiCore\ApiController;
@@ -77,7 +71,7 @@ class UserController extends ApiController
     }
 
     #[HttpPost]
-    public function list(#[FromBody, QueryOf(User::class, relations: ['role', 'orders.items'])] Query $query): array
+    public function list(#[FromBody, QueryOf(UserResource::class)] Query $query): array
     {
         return $this->processor->process($this->db->table('users'), $query);
     }
@@ -103,18 +97,19 @@ $criteria->setSort($remaining);
 
 ## What a query can reach
 
-### Entities
+Everything a client sees of an entity is in one place: its resource. A resource stands for its entity wherever a query reaches it, at the root or through a relation, in `select`, `filter` and `sort`, and naming the entity doesn't get around it.
 
-A query can reach the readable properties of the entity.
+### An entity without a resource
 
-- `access: w`, like a password, doesn't exist for a query: it can't be selected, filtered, sorted or searched, not even through a relation. **A value which an event only masks in the output can still be filtered by**, so that a client can guess it character by character. Make anything secret `access: w`.
-- Relations are allowed only by name. `apiQuery.entities` lists them for each entity, and they apply at every level, up to `maxDepth`. `relations: ['role', 'orders.items']` of `#[QueryOf]` or `process()` replaces them for that query: it allows `role`, `orders` and `items` under it, and nothing else.
+It's shown with all its readable columns, no relations and no limits. That suits code lists, which anyone may read, so they need no class at all. An entity needing relations, limits or other fields gets a resource.
+
+- `access: w` in `entities.neon`, like a password, doesn't exist for a query: it can't be selected, filtered, sorted or searched, not even through a relation. **A value which an event only masks in the output can still be filtered by**, so that a client can guess it character by character. Make anything secret `access: w`.
 - A virtual property can be selected when named, and can't be filtered by.
-- What an event adds with `set` is always output. List it under `computed` for it to be documented and named in `select`.
+- No relation leads anywhere from it, so it can't open a way to other tables. It's reached only where your code says: a controller reading its table, or a resource with a relation to it.
 
 ### Resources
 
-A resource says what clients see of an entity. It's a class with `#[Resource]`, which names the fields to show, and declares only what differs from the entity:
+A resource is a class with `#[Resource]`, found in a namespace of `apiQuery.resources`. It names the fields to show, and declares only what differs from the entity:
 
 ```php
 use Phlox\ApiQuery\Attributes\Field;
@@ -140,12 +135,14 @@ final readonly class UserResource
     public function __construct(
         #[Field('email', searchable: true)] public string $login,                // under another name
         #[Field(filterable: false)] public ?string $previewToken = null,         // can be read, not filtered or sorted by
-        public ?RoleResource $role = null,                                       // a relation
+        public ?Role $role = null,                                               // a relation, shown as Role is
         #[Field('activeOrders')] public array $purchases = [],                   // a relation under another name
     ) {
     }
 }
 ```
+
+A relation is declared with the type of what it leads to: a resource, or the entity, which is then shown as its own resource, or by default without one. Only declared relations can be reached, and a star never reaches one. To leave one out, just don't declare it.
 
 | `fields` | What the query can reach |
 |---|---|
@@ -155,9 +152,70 @@ final readonly class UserResource
 
 Types and descriptions of named fields come from the entity. What the class declares wins over a named field of the same name, and with a star, a property declared under another name isn't shown under its own as well.
 
-Clients use the names of the resource, and everything else of the entity isn't there. A star never reaches relations, so a relation has to be declared, with another resource as its type. To leave one out, just don't declare it.
+Clients use the names of the resource, and everything else of the entity isn't there.
 
-A mistake in a resource, such as a field the entity doesn't have, a write-only one or a misspelled `except`, is an exception for you rather than an error for a client.
+A mistake in a resource, such as a field the entity doesn't have, a write-only one, a misspelled `except` or a relation typed with a resource of another entity, is an exception for you rather than an error for a client.
+
+An entity has one resource standing for it. Two of them in `apiQuery.resources` fail when the container compiles, unless all but one say `#[Resource(..., default: false)]`. Such another view is used only where `#[QueryOf]` or `process()` names it.
+
+### What can be read
+
+A public static `restrict()` of a resource limits what of its entity can be read. It gets the selection, and services by type after it:
+
+```php
+use Nette\Security\User;
+use Phlox\EntityDatabase\Database\Table\Selection;
+
+#[Resource(Project::class, fields: '*')]
+final readonly class ProjectResource
+{
+    public static function restrict(Selection $projects, User $user): void
+    {
+        if (!$user->isInRole('admin')) {
+            $projects->where('owner_id', $user->getId());
+        }
+    }
+}
+```
+
+It holds wherever projects are read:
+
+- at the root, and in `total`,
+- in a collection of another record, such as `owner.projects`,
+- for a single record through a relation, such as `task.project`, which is null when it can't be read,
+- in a filter or a sort through a relation, which would otherwise tell what's in records the client can't read.
+
+The entity needs a single primary key, as the last two use it in a subquery. Services come from the container, so the `Processor` has to come from there too.
+
+### Computed fields
+
+A field with no property on the entity is `#[Computed]`, by a public static method named as the field, or the one given. It gets the entity, and services by type after it:
+
+```php
+use Phlox\ApiQuery\Attributes\Computed;
+
+#[Resource(Task::class, fields: '*')]
+final readonly class TaskResource
+{
+    public function __construct(
+        #[Computed] public ?bool $canEdit = null,
+        #[Computed('makeLabel')] public string $label = '',
+    ) {
+    }
+
+    public static function canEdit(Task $task, User $user): bool
+    {
+        return $user->isInRole('admin') || $task->assigneeId === $user->getId();
+    }
+
+    public static function makeLabel(Task $task): string
+    {
+        return "#{$task->id} {$task->title}";
+    }
+}
+```
+
+It's computed only when a query selects it, by name or by a star, and it can't be filtered or sorted by. The method can read anything of the entity, so the record is read with all its columns then.
 
 A resource only says what goes out. To take data from a request, use a class with `#[Dto]`, see [Saving data](https://github.com/phloxcz/rest-api#saving-data):
 
@@ -171,42 +229,7 @@ A resource only says what goes out. To take data from a request, use a class wit
 | Constraints | not checked | checked |
 | Relations | as a page, or an object | a plain list, or an object |
 
-#### A resource for the whole application
-
-`#[QueryOf]` holds for one parameter, and a parameter without it gets the whole entity. To have a resource stand for an entity everywhere, say so in the configuration:
-
-```neon
-apiQuery:
-    entities:
-        App\Entity\File:
-            resource: App\Api\FileResource
-```
-
-Then a plain `Query` over `File` follows the resource, and so does reaching `File` through a relation of another entity, in `select`, `filter` and `sort`. Naming the entity doesn't get around it. For one place to differ, name another resource with `#[QueryOf]` or `process()`, which is also how to document a parameter, because a plain `Query` doesn't know what it's going to be about.
-
-An entity with a resource can't have `relations` or `computed` here, as the resource declares them.
-
-A field with no property on the entity is `#[Computed]`, and can be selected but not filtered or sorted by:
-
-```php
-use Phlox\ApiQuery\Attributes\Computed;
-
-#[Resource(User::class)]
-final readonly class UserResource
-{
-    public function __construct(
-        public int $id,
-        #[Computed('makeLabel')] public string $label,   // by the method below
-        #[Computed] public ?bool $canManage = null,      // by onProcessedEntity, which can use services
-    ) {
-    }
-
-    public static function makeLabel(User $user): string
-    {
-        return "{$user->fullName} <{$user->email}>";
-    }
-}
-```
+### What comes out
 
 `process()` returns arrays, not instances of the resource, because a query usually selects only some of the fields. For the same reason, no field of a resource is documented as required. A resource is documented as what comes out of it, so a collection is a page, whatever type it's declared with.
 
@@ -243,11 +266,10 @@ public function report(#[QueryOfSql(['id' => new SqlField('id', Field::Integer),
 
 ### Overriding it
 
-`process()` also takes these directly, and they win over `#[QueryOf]`:
+`process()` also takes a resource directly, and it wins over `#[QueryOf]`:
 
 ```php
-$this->processor->process($selection, $query, UserResource::class);
-$this->processor->process($selection, $query, relations: ['role']);
+$this->processor->process($selection, $query, UserListResource::class);
 ```
 
 ## The language
@@ -346,11 +368,16 @@ For an export, the application can lift the limits of rows. `process($selection,
 
 ## Events
 
-```php
-$processor->onSelection[] = function (ProcessSelectionEventData $event): void {
-    // Before a collection is read, at every level; for access control
-    $event->selection->where('company_id', $this->user->companyId);
-};
+Events are for what a resource can't say. What can be read belongs to [`restrict()`](#what-can-be-read), which holds in filters and sorts through relations too, where an event doesn't.
+
+Register a listener once, in the configuration. The processor is a shared service, so a listener added in `startup()` of a controller is added again on every call, such as for each call of a JSON-RPC batch:
+
+```neon
+services:
+    auditListener: App\Api\AuditListener
+    apiQuery.processor:
+        setup:
+            - '$onProcessedEntity[]' = [@auditListener, onProcessedEntity]
 ```
 
 | Event | Can do |
@@ -365,7 +392,7 @@ An event gets the entity, and can read anything of it, also what the query didn'
 
 `$event->selection->getEntityName()` tells which entity a collection is of.
 
-**A filter through a relation doesn't go through `onSelection`.** It only tells whether a record matches, but that can reveal what's in a collection a client can't read. Don't allow a relation whose rows are limited by access rights only in this event: state the limit as `condition:` of the relation, which holds in filters too, or use a resource without it.
+`onSelection` isn't called for a filter or a sort through a relation, nor for a single record reached through one. That's why access control belongs to `restrict()`.
 
 ## Documentation
 
@@ -402,8 +429,9 @@ The whole way is in [`MIGRATION.md`](https://github.com/phloxcz/api-core/blob/ma
 The format of queries stays, including `criteria`, `take`, `skip` and the operators. Changes that need checking in an existing project:
 
 - **The response of a collection has one shape,** the one of `pagination: true`: `{data, total, ...}` at every level, and a plain list with `skipLimitOffset`. With `pagination: auto` or `false`, this changes what clients receive. `$this->processor->process()` keeps `skipLimitOffset` with its meaning: `true` is about the root, and a list names paths with dots.
-- **Relations have to be allowed.** A query reaching a relation not named in `apiQuery.entities`, `relations` or a resource gets `400`. List what your clients use in `apiQuery.entities`.
-- **Names in `select` that don't exist get `400`,** including what an event adds. List that under `computed`.
+- **What a query can reach is in resources.** An entity your clients query with relations gets a resource declaring them, and an entity without one shows its columns and no relations. A query reaching anything else gets `400`. Name the namespace of resources in `apiQuery.resources`.
+- **Access control goes to `restrict()` of a resource,** from `onSelection`, and computed fields to a method of the resource, from `onProcessedEntity` with `set`. Both get services as parameters.
+- **Names in `select` that don't exist get `400`,** including what an event adds. Make it a `#[Computed]` field.
 - **Wrong names get `400`.** Unknown fields used to be skipped silently, also in filters, which then returned more rows than asked for. Check the fields your grids send.
 - **Wrong values get `400`,** such as text for a number, and so do text operators on anything but text, like `contains` on a number. Unknown operators and directions were an exception or passed through before.
 - **`access: w` is hidden everywhere.** It used to be hidden only from `select`, while filtering and sorting by it worked, and so did searching in it. A column kept `rw` and masked by an event, such as a password, can still be filtered by, as it always could. Change it to `w`, and drop the masking, because reading such a property throws.

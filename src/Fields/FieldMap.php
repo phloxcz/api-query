@@ -31,23 +31,25 @@ use Phlox\EntityDatabase\Metadata\PropertyMeta;
  * Everything a query can reach, and nothing else. A name that isn't here doesn't
  * exist, as far as a client can tell, whichever part of a query it's used in.
  *
- * @phpstan-type EntityConfig array{relations: list<string>, computed: array<string, string>, resource: ?string}
+ * An entity is shown as its #[Resource], wherever it's reached. An entity without
+ * one is shown by default: all its readable columns, no relations, no limits.
  */
 final class FieldMap
 {
-    /** @var array<string, EntityConfig> What `apiQuery.entities` says, by class */
-    private static array $entities = [];
+    /** @var array<string, class-string> The #[Resource] of an entity, by the entity's class */
+    private static array $resources = [];
 
-    /** @var array<string, self> Maps following `apiQuery.entities`, the same for every query of a request */
-    private static array $sharedMaps = [];
+    /** @var array<string, self> */
+    private static array $maps = [];
 
     /**
      * @param array<string, Field> $fields
      * @param string|null $table Null for SQL
      * @param string|null $primaryColumn The column of a single primary key
      * @param class-string|null $entity
-     * @param bool $shared Follows `apiQuery.entities`, so it's the same everywhere and can hold itself
+     * @param bool $shared The same everywhere, so it's documented once and can hold itself
      * @param class-string|null $resource The #[Resource] it comes from
+     * @param \Closure|null $restrict restrict() of the resource: limits what can be read of the entity
      */
     private function __construct(
         public readonly array $fields,
@@ -55,49 +57,44 @@ final class FieldMap
         public readonly ?string $primaryColumn = null,
         public readonly ?string $entity = null,
         private readonly bool $shared = false,
-        private readonly ?string $resource = null,
+        public readonly ?string $resource = null,
+        public readonly ?\Closure $restrict = null,
     ) {
     }
 
     /**
-     * @param array<string, array{relations?: list<string>, computed?: array<string, string>, resource?: ?string}|object> $entities
+     * @param array<string, class-string> $resources The #[Resource] of an entity, by the entity's class
      */
-    public static function configureEntities(array $entities): void
+    public static function configureResources(array $resources): void
     {
-        self::$entities = [];
-        self::$sharedMaps = [];
-        foreach ($entities as $class => $config) {
-            $config = (array) $config;
-            $resource = isset($config['resource']) ? ltrim($config['resource'], '\\') : null;
-
-            if ($resource !== null && (($config['relations'] ?? []) !== [] || ($config['computed'] ?? []) !== [])) {
-                throw new \LogicException("apiQuery.entities: {$class} has a resource, which declares its own relations and computed fields, so it can't have them here.");
-            }
-
-            self::$entities[ltrim($class, '\\')] = [
-                'relations' => $config['relations'] ?? [],
-                'computed' => $config['computed'] ?? [],
-                'resource' => $resource,
-            ];
+        self::$resources = [];
+        self::$maps = [];
+        foreach ($resources as $entity => $resource) {
+            self::$resources[ltrim($entity, '\\')] = ltrim($resource, '\\');
         }
     }
 
     /**
-     * @param class-string $class A #[Resource] or an entity
-     * @param list<string>|null $relations For an entity, the relations that can be reached;
-     *        null means what `apiQuery.entities` says
+     * The #[Resource] standing for an entity, if it has one.
+     *
+     * @return class-string|null
      */
-    public static function for(string $class, ?array $relations = null): self
+    public static function getResourceOf(string $entity): ?string
+    {
+        return self::$resources[ltrim($entity, '\\')] ?? null;
+    }
+
+    /**
+     * @param class-string $class A #[Resource] or an entity
+     */
+    public static function for(string $class): self
     {
         if (self::isResource($class)) {
-            if ($relations !== null) {
-                throw new \LogicException("Resource {$class} declares its own relations, so none can be given for it.");
-            }
             return self::forResource($class);
         }
 
         if (is_a($class, Entity::class, true)) {
-            return self::forEntity($class, $relations);
+            return self::forEntity($class);
         }
 
         throw new \LogicException("{$class} is neither an entity nor a class with the #[Resource] attribute.");
@@ -124,99 +121,50 @@ final class FieldMap
     }
 
     /**
-     * Readable properties of an entity. A relation counts only when it's named:
-     * `orders.items` allows `orders` and `items` under it. Without a list, the
-     * relations of `apiQuery.entities` apply at every level.
-     *
-     * A resource configured for the entity stands for it everywhere, also where
-     * it's reached through a relation of another entity.
+     * How an entity is shown: as its #[Resource], or without one by default, with all
+     * its readable columns and no relations. A column that's `access: w` isn't readable.
      *
      * @param class-string $class
-     * @param list<string>|null $relations
      */
-    public static function forEntity(string $class, ?array $relations = null): self
+    public static function forEntity(string $class): self
     {
-        $resource = self::$entities[ltrim($class, '\\')]['resource'] ?? null;
-        if ($resource !== null) {
-            if ($relations !== null && $relations !== []) {
-                throw new \LogicException("{$class} is shown as {$resource}, which declares its own relations, so none can be given for it.");
-            }
-            if (!class_exists($resource) || !self::isResource($resource)) {
-                throw new \LogicException("apiQuery.entities says {$class} is shown as {$resource}, which isn't a #[Resource].");
-            }
+        $class = ltrim($class, '\\');
+        $resource = self::$resources[$class] ?? null;
 
-            if (ltrim(self::readResource($resource)->entity, '\\') !== ltrim($class, '\\')) {
-                throw new \LogicException("apiQuery.entities says {$class} is shown as {$resource}, which isn't a #[Resource] of that entity.");
-            }
-
-            return self::forResource($resource);
-        }
-
-        if ($relations === null) {
-            return self::$sharedMaps[ltrim($class, '\\')] ??= self::buildForEntity($class, null);
-        }
-
-        return self::buildForEntity($class, $relations);
+        return $resource !== null
+            ? self::forResource($resource)
+            : self::$maps[$class] ??= self::buildDefault($class);
     }
 
     /**
      * @param class-string $class
-     * @param list<string>|null $relations
      */
-    private static function buildForEntity(string $class, ?array $relations): self
+    private static function buildDefault(string $class): self
     {
         $meta = MetaStorage::get($class);
-        $config = self::$entities[ltrim($class, '\\')] ?? ['relations' => [], 'computed' => [], 'resource' => null];
-        $shared = $relations === null;
-
-        // Relation => what's allowed under it
-        $tree = [];
-        foreach ($relations ?? $config['relations'] as $path) {
-            $parts = explode('.', $path, 2);
-            $tree[$parts[0]] ??= [];
-            if (isset($parts[1])) {
-                $tree[$parts[0]][] = $parts[1];
-            }
-        }
-
-        foreach (array_keys($tree) as $name) {
-            $property = $meta->byProp[$name] ?? null;
-            if ($property === null || ($property->ref === null && $property->related === null)) {
-                throw new \LogicException("{$class} has no relation '{$name}'.");
-            }
-        }
 
         $fields = [];
         foreach ($meta->properties as $property) {
-            if (!$property->readable) {
-                continue;
+            if ($property->readable && $property->ref === null && $property->related === null) {
+                $fields[$property->name] = self::createField($property->name, $property, $meta, null);
             }
-
-            $isRelation = $property->ref !== null || $property->related !== null;
-            if ($isRelation && !isset($tree[$property->name])) {
-                continue;
-            }
-
-            $children = $shared ? null : ($tree[$property->name] ?? []);
-            $fields[$property->name] = self::createField(
-                $property->name,
-                $property,
-                $meta,
-                $isRelation ? static fn(): self => self::forEntity(self::getTargetClass($property, $meta), $children) : null,
-            );
         }
 
-        foreach ($config['computed'] as $name => $type) {
-            $fields[$name] = new Field($name, null, null, self::normalizeType($type), filterable: false, computed: true);
-        }
-
-        return new self($fields, $meta->table, self::findPrimaryColumn($meta), ltrim($class, '\\'), $shared);
+        return new self($fields, $meta->table, self::findPrimaryColumn($meta), $class, shared: true);
     }
 
     /**
      * @param class-string $class
      */
     public static function forResource(string $class): self
+    {
+        return self::$maps[ltrim($class, '\\')] ??= self::buildResource($class);
+    }
+
+    /**
+     * @param class-string $class
+     */
+    private static function buildResource(string $class): self
     {
         $resource = self::readResource($class);
         $entity = $resource->entity;
@@ -256,27 +204,59 @@ final class FieldMap
             }
 
             $isRelation = $property->ref !== null || $property->related !== null;
-            $target = self::findResourceClass($dtoField->type);
+            $target = self::findTargetClass($dtoField->type);
 
             if ($isRelation && $target === null) {
-                throw new \LogicException("Field '{$name}' of {$class} is a relation, so its type must be a #[Resource] or a list of them.");
+                throw new \LogicException("Field '{$name}' of {$class} is a relation, so its type must be a #[Resource] or an entity, or a list of them.");
             }
             if (!$isRelation && $target !== null) {
-                throw new \LogicException("Field '{$name}' of {$class} holds a #[Resource], but '{$propertyName}' of {$entity} is not a relation.");
+                throw new \LogicException("Field '{$name}' of {$class} holds a #[Resource] or an entity, but '{$propertyName}' of {$entity} is not a relation.");
+            }
+
+            if ($target !== null) {
+                // A resource of another entity would show something else under the name of this one
+                $reached = self::getTargetClass($property, $meta);
+                $shows = self::isResource($target) ? ltrim(self::readResource($target)->entity, '\\') : $target;
+                if ($shows !== $reached) {
+                    throw new \LogicException("Field '{$name}' of {$class} leads to {$reached}, but its type " . ($shows === $target ? 'is' : "is a #[Resource] of") . " {$shows}.");
+                }
             }
 
             $fields[$name] = self::createField(
                 $name,
                 $property,
                 $meta,
-                $target === null ? null : static fn(): self => self::forResource($target),
+                $target === null ? null : static fn(): self => self::for($target),
                 $attribute,
                 $dtoField->description,
                 $dtoField->schema,
             );
         }
 
-        return new self($fields, $meta->table, self::findPrimaryColumn($meta), ltrim($entity, '\\'), resource: $class);
+        return new self($fields, $meta->table, self::findPrimaryColumn($meta), ltrim($entity, '\\'), resource: $class, restrict: self::createRestrict($class, $meta));
+    }
+
+    /**
+     * restrict() of a resource, if it has one.
+     *
+     * @param class-string $class
+     */
+    private static function createRestrict(string $class, EntityMeta $meta): ?\Closure
+    {
+        $reflection = new \ReflectionClass($class);
+        if (!$reflection->hasMethod('restrict')) {
+            return null;
+        }
+
+        $method = $reflection->getMethod('restrict');
+        if (!$method->isStatic() || !$method->isPublic()) {
+            throw new \LogicException("restrict() of {$class} has to be public static, getting the Selection, and services after it.");
+        }
+        if (self::findPrimaryColumn($meta) === null) {
+            throw new \LogicException("{$class} has restrict(), so {$meta->class} needs a single primary key, to be limited in subqueries too.");
+        }
+
+        return $method->getClosure();
     }
 
     /**
@@ -549,20 +529,16 @@ final class FieldMap
 
     /**
      * @param class-string $class
-     * @return (\Closure(Entity): mixed)|null
      */
-    private static function createCompute(string $class, string $field, Computed $computed): ?\Closure
+    private static function createCompute(string $class, string $field, Computed $computed): \Closure
     {
-        if ($computed->method === null) {
-            return null;
-        }
-
-        $method = (new \ReflectionClass($class))->hasMethod($computed->method)
-            ? new \ReflectionMethod($class, $computed->method)
+        $name = $computed->method ?? $field;
+        $method = (new \ReflectionClass($class))->hasMethod($name)
+            ? new \ReflectionMethod($class, $name)
             : null;
 
         if ($method === null || !$method->isStatic() || !$method->isPublic()) {
-            throw new \LogicException("Computed field '{$field}' of {$class} needs a public static method {$computed->method}().");
+            throw new \LogicException("Computed field '{$field}' of {$class} needs a public static method {$name}(), getting the entity, and services after it.");
         }
 
         return $method->getClosure();
@@ -590,9 +566,11 @@ final class FieldMap
     }
 
     /**
+     * The #[Resource] or the entity a field holds, alone or in a list.
+     *
      * @return class-string|null
      */
-    private static function findResourceClass(Type $type): ?string
+    private static function findTargetClass(Type $type): ?string
     {
         $class = match ($type->kind) {
             Type::ClassName => $type->class,
@@ -600,7 +578,9 @@ final class FieldMap
             default => null,
         };
 
-        return $class !== null && class_exists($class) && self::isResource($class) ? $class : null;
+        return $class !== null && class_exists($class) && (self::isResource($class) || is_a($class, Entity::class, true))
+            ? ltrim($class, '\\')
+            : null;
     }
 
     /**

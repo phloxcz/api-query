@@ -10,6 +10,7 @@ use Phlox\ApiQuery\Attributes\QueryOf;
 use Phlox\ApiQuery\Query;
 use Phlox\ApiQuery\Tests\Fixtures\Entity\User;
 use Phlox\ApiQuery\Tests\Fixtures\Resources\UserResource;
+use Phlox\ApiQuery\Tests\Fixtures\Resources\UserWithOrders;
 use Phlox\ApiQuery\UsesQueryProcessor;
 use Phlox\EntityDatabase\Database\Explorer;
 use Phlox\RestApi\Attributes\FromBody;
@@ -39,17 +40,17 @@ class QueryController extends ApiController
     }
 
     /**
-     * Users as entities.
+     * Users with their orders.
      */
     #[HttpPost]
     #[Route('entities')]
-    public function entities(#[FromBody, QueryOf(User::class, relations: ['role', 'orders.items'])] Query $query): array
+    public function entities(#[FromBody, QueryOf(UserWithOrders::class)] Query $query): array
     {
         return $this->processor->process($this->db->table('users'), $query);
     }
 
     /**
-     * Nothing declared, and the entity without relations.
+     * Nothing declared: the entity without a resource, so without relations.
      */
     #[HttpPost]
     #[Route('plain')]

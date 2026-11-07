@@ -65,7 +65,7 @@ Assert::same(-32602, $hidden->data['error']['code']);
 $entities = $post('query/entities', ['select' => 'email,role(name),orders(id,items(name))', 'pageSize' => 1]);
 Assert::same('admin', $entities->data['data'][0]['role']['name']);
 Assert::same('apple', $entities->data['data'][0]['orders']['data'][0]['items']['data'][0]['name']);
-Assert::same(['select.orders.user' => 'is not a known field.'], $post('query/entities', ['select' => 'orders(user(id))'])->data['error']['fields'], 'only the relations it names');
+Assert::same(['select.orders.user' => 'is not a known field.'], $post('query/entities', ['select' => 'orders(user(id))'])->data['error']['fields'], 'only the relations it declares');
 
 Assert::same(['select.role' => 'is not a known field.'], $post('query/plain', ['select' => 'role(id)'])->data['error']['fields'], 'nothing declared means no relations');
 Assert::same(3, $post('query/plain', ['select' => 'id'])->data['pageSize'], 'the limit of the configuration');
@@ -132,14 +132,17 @@ Assert::same(['id', 'login'], array_slice(array_keys($schemas['UserResource']['p
 Assert::false(isset($schemas['UserResource']['properties']['email']));
 Assert::contains('RoleResource', json_encode($schemas['UserResource']['properties']['role']));
 
-$item = $paths['/query/entities']['post']['responses'][200]['content']['application/json']['schema']['properties']['data']['items'];
-Assert::contains('integer', (array) $item['properties']['id']['type'], 'an entity');
+Assert::same(['$ref' => '#/components/schemas/UserWithOrders'], $paths['/query/entities']['post']['responses'][200]['content']['application/json']['schema']['properties']['data']['items']);
+$item = $schemas['UserWithOrders'];
+Assert::contains('integer', (array) $item['properties']['id']['type'], 'all columns of the entity');
 Assert::same(['string', 'null'], $item['properties']['fullName']['type']);
 Assert::same('date-time', $item['properties']['createdAt']['format']);
 Assert::same('date', $item['properties']['birthday']['format']);
 Assert::false(isset($item['properties']['passwordHash']), 'a write-only column is not documented either');
-Assert::false(isset($item['properties']['activeOrders']), 'nor a relation it does not name');
-Assert::true(isset($item['properties']['orders']['properties']['data']['items']['properties']['items']['properties']['data']['items']['properties']['name']), 'nested collections are pages too');
+Assert::false(isset($item['properties']['activeOrders']), 'nor a relation it does not declare');
+Assert::same(['$ref' => '#/components/schemas/OrderWithItems'], $item['properties']['orders']['properties']['data']['items'], 'nested collections are pages too');
+Assert::same(['$ref' => '#/components/schemas/Item'], $schemas['OrderWithItems']['properties']['items']['properties']['data']['items'], 'an entity without a resource');
+Assert::false(isset($schemas['Item']['properties']['order']), 'has no relations');
 
 Assert::same(['$ref' => '#/components/schemas/UserResource'], $paths['/query/{id}']['get']['responses'][200]['content']['application/json']['schema'], 'one record');
 Assert::same(['data', 'total', 'page', 'pageSize', 'from', 'to'], array_keys($paths['/query/created']['post']['responses'][201]['content']['application/json']['schema']['properties']), '#[Response(201)] takes it too');

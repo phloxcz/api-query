@@ -33,18 +33,11 @@ use Tester\Assert;
 
 require __DIR__ . '/bootstrap.php';
 require __DIR__ . '/fixtures/Resources.php';
+require __DIR__ . '/fixtures/Patterns/Resources.php';
 
 $container = createContainer(<<<'NEON'
 apiQuery:
-    entities:
-        Phlox\ApiQuery\Tests\Fixtures\Entity\User:
-            relations: [role, orders, activeOrders]
-            computed:
-                canManage: bool
-        Phlox\ApiQuery\Tests\Fixtures\Entity\Order:
-            relations: [user, items]
-        Phlox\ApiQuery\Tests\Fixtures\Entity\Role:
-            relations: [users]
+    resources: Phlox\ApiQuery\Tests\Fixtures\Patterns
 NEON);
 
 $explorer = $container->getByType(Explorer::class);
@@ -54,12 +47,12 @@ $fieldsOf = static function (callable $call): array {
     return $e->getData()['fields'];
 };
 
-$entities = $container->getService('apiQuery.config')->entities;
-$create = static fn(mixed ...$config): Processor => new Processor(new QueryConfig(...$config, entities: $entities));
+$resources = $container->getService('apiQuery.config')->resources;
+$create = static fn(mixed ...$config): Processor => new Processor(new QueryConfig(...$config, resources: $resources));
 
 $processor = $create();
 
-// --- Relations for the whole application, so that controllers need no attribute
+// --- Resources for the whole application, so that controllers need no attribute
 
 $tree = $processor->process($users(), Query::create(['select' => 'email,role(name),orders(status,items(name))', 'pageSize' => 1]))['data'][0];
 Assert::same('admin', $tree['role']['name']);
@@ -71,8 +64,8 @@ Assert::same('admin', $around['orders']['data'][0]['user']['role']['name'], 'rel
 Assert::same(['select.secrets' => 'is not a known field.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['select' => 'secrets']))));
 Assert::same(['select.orders.user.orders.user' => 'is nested too deep, at most 3 levels are allowed.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['select' => 'orders(user(orders(user(id))))']))));
 
-// A list given here replaces them
-Assert::same(['select.role' => 'is not a known field.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['select' => 'role(id)']), relations: ['orders'])));
+// A resource given here replaces it
+Assert::same(['select.orders' => 'is not a known field.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['select' => 'orders(id)']), Phlox\ApiQuery\Tests\Fixtures\Resources\UserResource::class)));
 
 // --- A missing query, also one passed on to another method
 
@@ -170,8 +163,8 @@ Assert::same(
     $masking->process($users()->get(1), Query::create(['select' => 'id,email,age'])),
 );
 
-// What events add can be named, and the query can't use it
-Assert::same(['email' => '***', 'canManage' => true], $masking->process($users()->get(1), Query::create(['select' => 'canManage,email'])));
+// A computed field can be named, and the query can't filter by it
+Assert::same(['canManage' => true, 'email' => '***'], $masking->process($users()->get(1), Query::create(['select' => 'canManage,email'])), 'in the order of select');
 Assert::same(['filter.canManage' => 'can not be filtered by.'], $fieldsOf(static fn() => $masking->process($users(), Query::create(['filter' => ['field' => 'canManage', 'value' => true]]))));
 
 // --- Access control in an event
@@ -216,15 +209,10 @@ Assert::same(['id'], FieldMap::forResource(NoFilterThroughRelation::class)->getP
 
 $computedQuery = static fn(array $query, ?Processor $with = null): array => ($with ?? $processor)->process($users(), Query::create($query), ComputedResource::class)['data'][0];
 
-Assert::same(['id' => 1, 'label' => 'ann@example.com (30)'], $computedQuery(['pageSize' => 1]), 'a method, reading what was not selected');
+Assert::same(['id' => 1, 'label' => 'ann@example.com (30)', 'canManage' => true], $computedQuery(['pageSize' => 1]), 'a method, reading what was not selected; a star means computed fields too');
 Assert::same(['label' => 'ann@example.com (30)'], $computedQuery(['select' => 'label', 'pageSize' => 1]));
 
-$filling = $create();
-$filling->onProcessedEntity[] = static function (ProcessedEntityEventData $event): void {
-    $event->set['canManage'] = true;
-};
-Assert::same(['id' => 1, 'canManage' => true], $computedQuery(['select' => 'id,canManage', 'pageSize' => 1], $filling), 'or an event');
-Assert::same(['id' => 1], $computedQuery(['select' => 'id,canManage', 'pageSize' => 1]), 'nothing without one');
+Assert::same(['id' => 1, 'canManage' => true], $computedQuery(['select' => 'id,canManage', 'pageSize' => 1]), 'a method named as the field');
 
 Assert::same(['filter.label' => 'can not be filtered by.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['filter' => ['field' => 'label', 'value' => 'x']]), ComputedResource::class)));
 Assert::same(['sort.label' => 'can not be sorted by.'], $fieldsOf(static fn() => $processor->process($users(), Query::create(['sort' => [['field' => 'label']]]), ComputedResource::class)));
@@ -234,21 +222,22 @@ Assert::exception(static fn() => $processor->process($users(), Query::create(), 
 
 $builder = new SchemaBuilder();
 SchemaBuilder::addClassDescriber(static fn(string $class, SchemaBuilder $b): ?array => is_a($class, Phlox\EntityDatabase\Entity\Entity::class, true) ? FieldMap::forEntity($class)->toSchema($b) : null);
-Assert::same(['$ref' => '#/components/schemas/User'], $builder->build(new Type(Type::ClassName, class: User::class)), 'an entity named anywhere');
+Assert::same(['$ref' => '#/components/schemas/UserResource'], $builder->build(new Type(Type::ClassName, class: User::class)), 'an entity named anywhere is its resource');
 $schemas = $builder->getSchemas();
-foreach (['User', 'Order', 'Item', 'Role'] as $name) {
+foreach (['UserResource', 'OrderResource', 'Item', 'RoleResource'] as $name) {
     Assert::true(isset($schemas[$name]), $name);
 }
-Assert::false(isset($schemas['User']['properties']['passwordHash']), 'without what is write-only');
-Assert::same(['boolean', 'null'], $schemas['User']['properties']['canManage']['type'], 'with what events add');
-Assert::same(['$ref' => '#/components/schemas/Order'], $schemas['User']['properties']['orders']['properties']['data']['items'], 'relations by reference, so they can go in a circle');
-Assert::same(['anyOf' => [['$ref' => '#/components/schemas/User'], ['type' => 'null']]], $schemas['Order']['properties']['user']);
+Assert::false(isset($schemas['UserResource']['properties']['passwordHash']), 'without what is write-only');
+Assert::same(['boolean', 'null'], $schemas['UserResource']['properties']['canManage']['type'], 'with what is computed');
+Assert::same(['$ref' => '#/components/schemas/OrderResource'], $schemas['UserResource']['properties']['orders']['properties']['data']['items'], 'relations by reference, so they can go in a circle');
+Assert::same(['anyOf' => [['$ref' => '#/components/schemas/UserResource'], ['type' => 'null']]], $schemas['OrderResource']['properties']['user']);
+Assert::false(isset($schemas['Item']['properties']['order']), 'an entity without a resource has no relations');
 
 $plain = new QueryOf(User::class);
-Assert::contains('Relations: `role`, `orders`, `activeOrders`.', $plain->describeParameter(), 'what the configuration says');
+Assert::contains('Relations: `role`, `orders`, `activeOrders`.', $plain->describeParameter(), 'what its resource says');
 $byParameter = $plain->describeParameterSchema($queryBuilder = new SchemaBuilder());
-Assert::same(['$ref' => '#/components/schemas/Query_User'], $byParameter);
-$paths = $queryBuilder->getSchemas()['QueryFilter_User']['properties']['field']['enum'];
+Assert::same(['$ref' => '#/components/schemas/Query_UserResource'], $byParameter);
+$paths = $queryBuilder->getSchemas()['QueryFilter_UserResource']['properties']['field']['enum'];
 Assert::contains('email', $paths);
 Assert::contains('role.name', $paths);
 Assert::contains('orders.items.name', $paths);

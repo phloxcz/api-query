@@ -13,6 +13,8 @@ declare(strict_types=1);
 namespace Phlox\ApiQuery;
 
 use Nette\Database\Driver;
+use Nette\Database\SqlLiteral;
+use Nette\DI\Container;
 use Nette\Utils\Arrays;
 use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiQuery\Events\ProcessedEntityEventData;
@@ -38,7 +40,7 @@ use Phlox\EntityDatabase\Entity\Entity;
  * offset. So the number of rows is checked first, and a query wanting too many gets
  * an error instead of exhausting the memory.
  *
- * @phpstan-type PreparedCriteria array{where: array{string, list<mixed>}|null, order: list<string>, search: ?string, pageSize: int, offset: int}
+ * @phpstan-type PreparedCriteria array{where: array{string, list<mixed>}|null, order: list<array{string, list<mixed>}>, search: ?string, pageSize: int, offset: int}
  */
 final class Processor
 {
@@ -62,17 +64,23 @@ final class Processor
     /** @var bool|list<string> */
     private bool|array $skipLimitOffset = false;
 
-    public function __construct(private readonly QueryConfig $config = new QueryConfig())
-    {
-        FieldMap::configureEntities($config->entities);
+    /** @var Selection<Entity>|null Where tables of other entities come from, for restrict() of resources: the root's */
+    private ?Selection $source = null;
+
+    /**
+     * @param Container|null $container Gives services to methods of resources, which ask for them by type
+     */
+    public function __construct(
+        private readonly QueryConfig $config = new QueryConfig(),
+        private readonly ?Container $container = null,
+    ) {
+        FieldMap::configureResources($config->resources);
     }
 
     /**
      * @param Selection<Entity>|Entity|null $what
      * @param class-string|null $of A #[Resource] or an entity; by default what #[QueryOf] of the
-     *        parameter says, and the entity itself without it
-     * @param list<string>|null $relations For an entity, the relations a query can reach, like
-     *        `role` and `orders.items`. By default what #[QueryOf] or `apiQuery.entities` says
+     *        parameter says, and the resource of the entity without it
      * @param bool|list<string> $skipLimitOffset Collections without limits, which come as lists:
      *        true for the root, or their paths like `@`, `orders` and `orders.items`. It also
      *        turns off `maxRows`, so only ever pass what the application decided
@@ -83,40 +91,39 @@ final class Processor
         Selection|Entity|null $what,
         ?Query $query = null,
         ?string $of = null,
-        ?array $relations = null,
         bool|array $skipLimitOffset = false,
     ): ?array {
         if ($what === null) {
             return null;
         }
 
-        // An event can call this again, in the middle of what's being done
-        $state = [$this->rowsLeft, $this->prepared, $this->skipLimitOffset];
+        // An event or a method of a resource can call this again, in the middle of what's being done
+        $state = [$this->rowsLeft, $this->prepared, $this->skipLimitOffset, $this->source];
 
         try {
-            return $this->run($what, $query ?? Query::create(), $of, $relations, $skipLimitOffset);
+            return $this->run($what, $query ?? Query::create(), $of, $skipLimitOffset);
         } finally {
-            [$this->rowsLeft, $this->prepared, $this->skipLimitOffset] = $state;
+            [$this->rowsLeft, $this->prepared, $this->skipLimitOffset, $this->source] = $state;
         }
     }
 
     /**
      * @param Selection<Entity>|Entity $what
-     * @param list<string>|null $relations
      * @param bool|list<string> $skipLimitOffset
      * @return array<int|string, mixed>|null
      */
-    private function run(Selection|Entity $what, Query $query, ?string $of, ?array $relations, bool|array $skipLimitOffset): ?array
+    private function run(Selection|Entity $what, Query $query, ?string $of, bool|array $skipLimitOffset): ?array
     {
         $class = ltrim($what instanceof Selection ? $what->getName() : $what::class, '\\');
-        $map = $this->resolveMap($class, $query, $of, $relations);
+        $map = $this->resolveMap($class, $query, $of);
 
         if ($map->entity !== $class) {
             throw new \LogicException("The query is about {$map->entity}, but it was given {$class}.");
         }
 
+        $this->source = $what instanceof Selection ? $what : self::readSelection($what);
         $driver = $this->getDriver($what);
-        $compiler = new ConditionCompiler($driver, $this->config->maxDepth);
+        $compiler = new ConditionCompiler($driver, $this->config->maxDepth, $this->buildRestriction(...));
 
         $errors = [];
         $collections = [];
@@ -146,23 +153,99 @@ final class Processor
             : $this->processRecords([$what], $node, [], $compiler)[0] ?? null;
     }
 
-    /**
-     * @param list<string>|null $relations
-     */
-    private function resolveMap(string $class, Query $query, ?string $of, ?array $relations): FieldMap
+    private function resolveMap(string $class, Query $query, ?string $of): FieldMap
     {
-        $queryOf = $query->getQueryOf();
+        /** @var class-string $target */
+        $target = $of ?? $query->getQueryOf()->class ?? $class;
 
-        if ($of !== null) {
-            /** @var class-string $of */
-            return FieldMap::for($of, $relations);
-        }
-        if ($queryOf !== null) {
-            return FieldMap::for($queryOf->class, $relations ?? $queryOf->relations);
+        return FieldMap::for($target);
+    }
+
+    /**
+     * The selection an entity was read from, to reach other tables of its database.
+     *
+     * @return Selection<Entity>|null
+     */
+    private static function readSelection(Entity $entity): ?Selection
+    {
+        // An entity keeps it for itself, and this package is the one asking
+        return (fn(): ?Selection => $this->_ctx->selection)->call($entity);
+    }
+
+    /**
+     * Calls a method of a resource, giving services to the parameters after those passed.
+     *
+     * @param list<mixed> $args
+     */
+    private function invoke(\Closure $method, array $args): mixed
+    {
+        if ((new \ReflectionFunction($method))->getNumberOfParameters() <= count($args)) {
+            return $method(...$args);
         }
 
-        /** @var class-string $class */
-        return FieldMap::for($class, $relations);
+        if ($this->container === null) {
+            throw new \LogicException('A method of a resource asks for services, so the Processor needs the DI container. Get it from the container rather than creating it.');
+        }
+
+        return $this->container->callMethod($method, $args);
+    }
+
+    /**
+     * restrict() of a resource as a condition on its table, for a subquery: a filter
+     * or a sort through a relation must not see what the client can't read.
+     *
+     * @return array{string, list<mixed>}|null
+     */
+    private function buildRestriction(FieldMap $map): ?array
+    {
+        if ($map->restrict === null) {
+            return null;
+        }
+
+        $selection = $this->createSelection($map);
+        $this->invoke($map->restrict, [$selection]);
+
+        $driver = $selection->nSelection->getExplorer()->getConnection()->getDriver();
+        $key = $driver->delimite((string) $map->table) . '.' . $driver->delimite((string) $map->primaryColumn);
+        $builder = $selection->nSelection->select($key)->getSqlBuilder();
+
+        // A literal goes in as it is, so Nette doesn't take its names for joins of the outer query
+        return ["{$key} IN (?)", [new SqlLiteral($builder->buildSelectQuery(), $builder->getParameters())]];
+    }
+
+    /**
+     * @return Selection<Entity>
+     */
+    private function createSelection(FieldMap $map): Selection
+    {
+        $source = $this->source ?? throw new \LogicException(
+            "{$map->resource} has restrict(), but the query got an entity with no selection it came from.",
+        );
+
+        return new Selection($source->nSelection->getExplorer()->table((string) $map->table), $source->entityFactory);
+    }
+
+    /**
+     * Keys of records restrict() lets through, out of those given.
+     *
+     * @param list<mixed> $keys
+     * @return array<int|string, true>
+     */
+    private function findAllowed(FieldMap $map, array $keys): array
+    {
+        if ($keys === []) {
+            return [];
+        }
+
+        $selection = $this->createSelection($map);
+        $this->invoke($map->restrict ?? throw new \LogicException("{$map->resource} has no restrict()."), [$selection]);
+
+        $allowed = [];
+        foreach ($selection->nSelection->where((string) $map->primaryColumn, $keys) as $row) {
+            $allowed[(string) $row[(string) $map->primaryColumn]] = true;
+        }
+
+        return $allowed;
     }
 
     /**
@@ -338,8 +421,8 @@ final class Processor
             }
         }
 
-        foreach ($prepared['order'] as $expression) {
-            $selection->order($expression);
+        foreach ($prepared['order'] as [$expression, $params]) {
+            $selection->order($expression, ...$params);
         }
 
         // Paging needs a stable order, and SQL Server won't do it without one
@@ -351,6 +434,11 @@ final class Processor
         // quietly read null. Whoever gets the entity may read anything, so nothing is left out.
         if ($this->onEntity === [] && $this->onProcessedEntity === [] && !$node->hasComputedValues()) {
             $selection->select(implode(', ', $node->getColumns($compiler, $extraColumns)));
+        }
+
+        // What the client can read, in the total too
+        if ($node->map->restrict !== null) {
+            $this->invoke($node->map->restrict, [$selection]);
         }
 
         $event = new ProcessSelectionEventData($selection, $path, array_map(strval(...), array_keys($node->fields)));
@@ -418,9 +506,26 @@ final class Processor
             $this->reserveRows($expected, $childPath);
         }
 
+        // A single record restrict() hides is null, as if there was none; asked for all parents at once
+        $allowed = [];
+        foreach ($node->children as $name => $child) {
+            $relation = $node->fields[$name]->relation;
+            if ($relation === null || $relation->toMany || $child->map->restrict === null) {
+                continue;
+            }
+            $keys = [];
+            foreach ($entities as $entity) {
+                $key = $entity->toArrayDb()[$relation->localColumn] ?? null;
+                if ($key !== null) {
+                    $keys[(string) $key] = $key;
+                }
+            }
+            $allowed[$name] = $this->findAllowed($child->map, array_values($keys));
+        }
+
         $output = [];
         foreach ($entities as $index => $entity) {
-            $record = $this->processRecord($entity, $node, $path, $compiler, $collections[$index] ?? []);
+            $record = $this->processRecord($entity, $node, $path, $compiler, $collections[$index] ?? [], $allowed);
             if ($record !== null) {
                 $output[] = $record;
             }
@@ -432,9 +537,10 @@ final class Processor
     /**
      * @param list<string> $path
      * @param array<string, array{Selection<Entity>, int}> $collections
+     * @param array<string, array<int|string, true>> $allowed Keys of single records restrict() lets through, by relation
      * @return array<string, mixed>|null
      */
-    private function processRecord(Entity $entity, SelectNode $node, array $path, ConditionCompiler $compiler, array $collections): ?array
+    private function processRecord(Entity $entity, SelectNode $node, array $path, ConditionCompiler $compiler, array $collections, array $allowed = []): ?array
     {
         $select = array_map(strval(...), array_keys($node->fields));
 
@@ -450,9 +556,9 @@ final class Processor
 
             if ($field->computed) {
                 if ($field->compute !== null) {
-                    $output[$name] = $this->formatValue(($field->compute)($entity), $field);
+                    $output[$name] = $this->formatValue($this->invoke($field->compute, [$entity]), $field);
                 }
-                continue; // otherwise it's up to an event
+                continue;
             }
 
             $property = (string) $field->property;
@@ -466,6 +572,10 @@ final class Processor
             $childPath = [...$path, $name];
 
             if (!$field->relation->toMany) {
+                if (isset($allowed[$name]) && !isset($allowed[$name][(string) ($entity->toArrayDb()[$field->relation->localColumn] ?? '')])) {
+                    $output[$name] = null;
+                    continue;
+                }
                 $target = $entity->{$property};
                 $output[$name] = $target instanceof Entity
                     ? ($this->processRecords([$target], $child, $childPath, $compiler)[0] ?? null)

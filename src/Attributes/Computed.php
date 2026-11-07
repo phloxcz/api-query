@@ -15,21 +15,24 @@ namespace Phlox\ApiQuery\Attributes;
 use Attribute;
 
 /**
- * A field of a #[Resource] with no property on the entity. It can be selected, and
- * can't be filtered or sorted by.
+ * A field of a #[Resource] with no property on the entity, computed by a public static
+ * method of the resource, only when a query selects it. It can't be filtered or sorted by.
  *
  *     public function __construct(
- *         #[Computed('fullName')] public string $label,   // computed by the method below
- *         #[Computed] public bool $canManage = false,     // filled in by onProcessedEntity
+ *         #[Computed] public ?bool $canManage = null,       // by canManage()
+ *         #[Computed('fullName')] public string $label = '',
  *     )
  *
+ *     public static function canManage(User $user, Nette\Security\User $viewer): bool
  *     public static function fullName(User $user): string
+ *
+ * The method gets the entity, and services by type after it.
  */
 #[Attribute(Attribute::TARGET_PROPERTY | Attribute::TARGET_PARAMETER)]
 final class Computed
 {
     /**
-     * @param string|null $method A public static method of the resource, getting the entity
+     * @param string|null $method By default the name of the field
      */
     public function __construct(public readonly ?string $method = null)
     {

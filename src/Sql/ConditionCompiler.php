@@ -48,10 +48,13 @@ final class ConditionCompiler
 
     /**
      * @param int $maxDepth How many relations a field's path can go through
+     * @param (\Closure(FieldMap): (array{string, list<mixed>}|null))|null $restriction What of a table the
+     *        client can read, as a condition on it, for subqueries through relations
      */
     public function __construct(
         private readonly Driver $driver,
         private readonly int $maxDepth,
+        private readonly ?\Closure $restriction = null,
     ) {
         $this->dates = new ValueConverter(ParameterBinder::DefaultDateTimeFormats);
     }
@@ -96,14 +99,23 @@ final class ConditionCompiler
     }
 
     /**
-     * @return string|null An expression with a direction, for ORDER BY
+     * @return array{string, list<mixed>}|null An expression with a direction, for ORDER BY, and its parameters
      */
-    public function compileSort(Sort $sort, FieldMap $map, string $qualifier, string $where): ?string
+    public function compileSort(Sort $sort, FieldMap $map, string $qualifier, string $where): ?array
     {
         $at = "{$where}.{$sort->field}";
-        $expression = $this->compileSortPath(self::splitPath($sort->field), $map, $qualifier, $at, 0);
+        $params = [];
+        $expression = $this->compileSortPath(self::splitPath($sort->field), $map, $qualifier, $at, 0, $params);
 
-        return $expression === null ? null : $expression . ($sort->descending ? ' DESC' : ' ASC');
+        return $expression === null ? null : [$expression . ($sort->descending ? ' DESC' : ' ASC'), $params];
+    }
+
+    /**
+     * @return array{string, list<mixed>}|null
+     */
+    private function restrict(FieldMap $map): ?array
+    {
+        return $this->restriction === null ? null : ($this->restriction)($map);
     }
 
     /**
@@ -197,6 +209,13 @@ final class ConditionCompiler
             $params = [...$relationParams, ...$params];
         }
 
+        // A filter would otherwise tell what's in records the client can't read
+        $restricted = $this->restrict($relation->getTarget());
+        if ($restricted !== null) {
+            $condition = "{$condition} AND {$restricted[0]}";
+            $params = [...$params, ...$restricted[1]];
+        }
+
         return [
             "{$qualifier}.{$this->delimite($relation->localColumn)} IN (SELECT {$table}.{$this->delimite($relation->remoteColumn)} FROM {$table} WHERE {$condition})",
             $params,
@@ -205,8 +224,9 @@ final class ConditionCompiler
 
     /**
      * @param list<string> $path
+     * @param list<mixed> $params (output)
      */
-    private function compileSortPath(array $path, FieldMap $map, string $qualifier, string $at, int $depth): ?string
+    private function compileSortPath(array $path, FieldMap $map, string $qualifier, string $at, int $depth, array &$params): ?string
     {
         $name = array_shift($path);
         $field = $name === null ? null : $this->findField($name, $map, $at);
@@ -243,12 +263,23 @@ final class ConditionCompiler
 
         $relation = $field->relation;
         $table = $this->delimite($relation->table);
-        $inner = $this->compileSortPath($path, $relation->getTarget(), $table, $at, $depth + 1);
+        $innerParams = [];
+        $inner = $this->compileSortPath($path, $relation->getTarget(), $table, $at, $depth + 1, $innerParams);
         if ($inner === null) {
             return null;
         }
 
-        return "(SELECT {$inner} FROM {$table} WHERE {$table}.{$this->delimite($relation->remoteColumn)} = {$qualifier}.{$this->delimite($relation->localColumn)})";
+        // What the client can't read sorts as nothing
+        $condition = "{$table}.{$this->delimite($relation->remoteColumn)} = {$qualifier}.{$this->delimite($relation->localColumn)}";
+        $restricted = $this->restrict($relation->getTarget());
+        if ($restricted !== null) {
+            $condition .= " AND {$restricted[0]}";
+        }
+
+        // In the order they stand in the SQL: the inner expression, then the restriction
+        array_push($params, ...$innerParams, ...($restricted[1] ?? []));
+
+        return "(SELECT {$inner} FROM {$table} WHERE {$condition})";
     }
 
     /**

@@ -80,10 +80,12 @@ final class SqlProcessor
         $where = $criteria?->filter === null ? null : $compiler->compileFilter($criteria->filter, $map, $alias, 'filter');
 
         $order = [];
+        $orderParams = [];
         foreach ($criteria->sort ?? [] as $sort) {
             $expression = $compiler->compileSort($sort, $map, $alias, 'sort');
             if ($expression !== null) {
-                $order[] = $expression;
+                $order[] = $expression[0];
+                array_push($orderParams, ...$expression[1]);
             }
         }
 
@@ -135,7 +137,7 @@ final class SqlProcessor
         }
 
         $data = [];
-        foreach ($this->connection->query($dataSql, ...$allParams) as $row) {
+        foreach ($this->connection->query($dataSql, ...$allParams, ...$orderParams) as $row) {
             $record = [];
             foreach ($selected as $field) {
                 $record[$field->name] = $this->formatValue($row[(string) $field->column], $field);

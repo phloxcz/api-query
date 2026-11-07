@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 use Nette\Bootstrap\Configurator;
 use Nette\Database\Connection;
+use Phlox\ApiQuery\Attributes\Resource;
 use Phlox\ApiQuery\Fields\Field;
 use Phlox\ApiQuery\Fields\SqlField;
 use Phlox\ApiQuery\Processor;
@@ -18,6 +19,7 @@ use Phlox\ApiQuery\SqlProcessor;
 use Phlox\ApiQuery\Tests\Fixtures\FirebirdEntity\Customer;
 use Phlox\ApiQuery\Tests\Fixtures\FirebirdEntity\CustomerOrder;
 use Phlox\EntityDatabase\Database\Explorer;
+use Phlox\EntityDatabase\Database\Table\Selection;
 use Phlox\EntityDatabase\Metadata\MetaStorage;
 use Tester\Assert;
 
@@ -30,6 +32,52 @@ if ($database['type'] !== 'firebird') {
 }
 
 createFirebirdSchema(new PDO($database['dsn'], $database['user'], $database['password']));
+
+#[Resource(Customer::class, fields: '*')]
+final readonly class FirebirdCustomer
+{
+    /** @param list<CustomerOrder> $orders */
+    public function __construct(public array $orders = [])
+    {
+    }
+}
+
+#[Resource(CustomerOrder::class, fields: '*')]
+final readonly class FirebirdOrder
+{
+    public function __construct(public ?Customer $customer = null)
+    {
+    }
+}
+
+/** Only orders from a price, as access rights would limit them. */
+#[Resource(CustomerOrder::class, fields: '*')]
+final readonly class DearOrder
+{
+    public function __construct(public ?LimitedCustomer $customer = null)
+    {
+    }
+
+    public static function restrict(Selection $orders): void
+    {
+        $orders->where('CENA >= ?', 3);
+    }
+}
+
+/** Only one customer. */
+#[Resource(Customer::class, fields: '*')]
+final readonly class LimitedCustomer
+{
+    /** @param list<DearOrder> $orders */
+    public function __construct(public array $orders = [])
+    {
+    }
+
+    public static function restrict(Selection $customers): void
+    {
+        $customers->where('ID', 1);
+    }
+}
 
 @mkdir(__DIR__ . '/tmp');
 $tempDir = __DIR__ . '/tmp/' . getmypid();
@@ -117,7 +165,7 @@ Assert::same(
         ['price' => 5.0, 'created' => date_create('2024-01-02 03:04:05')->format(DATE_ATOM), 'note' => 'První'],
         ['price' => 2.5, 'created' => date_create('2024-02-03')->format(DATE_ATOM), 'note' => null],
     ],
-    $run(['select' => 'id,orders(price,created,note)', 'pageSize' => 1], relations: ['orders'])['data'][0]['orders']['data'],
+    $run(['select' => 'id,orders(price,created,note)', 'pageSize' => 1], of: FirebirdCustomer::class)['data'][0]['orders']['data'],
     'a whole DOUBLE stays a number, in a collection',
 );
 Assert::same('20240203', $processor->process($explorer->table('OBJEDNAVKY')->where('ID', 3), Query::create(['select' => 'note']))['data'][0]['note'], 'digits in a BLOB stay text');
@@ -167,13 +215,26 @@ Assert::same([1], $orders('lt', '2024-02-03'));
 
 // --- Through relations
 
-Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.price', 'operator' => 'lt', 'value' => 3]], relations: ['orders'])));
+Assert::same([1], $ids($run(['select' => 'id', 'filter' => ['field' => 'orders.price', 'operator' => 'lt', 'value' => 3]], of: FirebirdCustomer::class)));
 $byOrder = $processor->process($explorer->table('OBJEDNAVKY'), Query::create([
     'select' => 'id,customer(name)',
     'sort' => [['field' => 'customer.name', 'dir' => 'desc'], ['field' => 'id']],
     'filter' => ['field' => 'customer.name', 'operator' => 'contains', 'value' => 'kůň'],
-]), relations: ['customer']);
+]), FirebirdOrder::class);
 Assert::same([['id' => 3, 'customer' => ['name' => 'Kůň']]], $byOrder['data']);
+
+// --- What restrict() hides, in subqueries of Firebird too
+
+$dear = static fn(string $table, array $query, string $of): ?array => $processor->process($explorer->table($table), Query::create($query), $of);
+Assert::same([1], $ids($dear('ZAKAZNICI', ['select' => 'id'], LimitedCustomer::class)), 'at the root');
+Assert::same([5.0], array_column($dear('ZAKAZNICI', ['select' => 'id,orders(price)'], LimitedCustomer::class)['data'][0]['orders']['data'], 'price'), 'in a collection');
+Assert::same([], $ids($dear('ZAKAZNICI', ['select' => 'id', 'filter' => ['field' => 'orders.price', 'operator' => 'lt', 'value' => 3]], LimitedCustomer::class)), 'in a filter through a relation');
+
+$dearOrders = $dear('OBJEDNAVKY', ['select' => 'id,customer(id)', 'sort' => [['field' => 'customer.name'], ['field' => 'id']]], DearOrder::class)['data'];
+Assert::true($dearOrders !== [], 'a sort through a relation runs, with the restriction as a parameter');
+foreach ($dearOrders as $order) {
+    Assert::same($order['customer'] === null ? null : 1, $order['customer']['id'] ?? null, 'a customer one can not read is null');
+}
 
 // --- A write-only column isn't there
 
