@@ -14,6 +14,7 @@ namespace Phlox\ApiQuery;
 
 use Nette\Database\Driver;
 use Nette\Utils\Arrays;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiQuery\Events\ProcessedEntityEventData;
 use Phlox\ApiQuery\Events\ProcessEntityEventData;
 use Phlox\ApiQuery\Events\ProcessSelectionEventData;
@@ -379,25 +380,7 @@ final class Processor
         $entities = iterator_to_array($selection, false);
         $this->reserveRows(count($entities), []);
 
-        return self::buildPage($this->processRecords($entities, $node, [], $compiler), $total, $prepared['offset'], $prepared['pageSize']);
-    }
-
-    /**
-     * @param list<mixed> $data
-     * @return array{data: list<mixed>, total: int, page: int, pageSize: int, from: ?int, to: ?int}
-     */
-    private static function buildPage(array $data, int $total, int $offset, int $pageSize): array
-    {
-        $last = min($offset + $pageSize, $total) - 1;
-
-        return [
-            'data' => $data,
-            'total' => $total,
-            'page' => (int) floor($offset / $pageSize) + 1,
-            'pageSize' => $pageSize,
-            'from' => $offset > $last ? null : $offset,
-            'to' => $offset > $last ? null : $last,
-        ];
+        return Paged::result($this->processRecords($entities, $node, [], $compiler), $total, $prepared['offset'], $prepared['pageSize']);
     }
 
     /**
@@ -520,7 +503,7 @@ final class Processor
         $prepared = $this->prepared[implode('/', $path)];
         $page = array_slice($entities, $prepared['offset'], $prepared['pageSize']);
 
-        return self::buildPage($this->processRecords($page, $node, $path, $compiler), $count, $prepared['offset'], $prepared['pageSize']);
+        return Paged::result($this->processRecords($page, $node, $path, $compiler), $count, $prepared['offset'], $prepared['pageSize']);
     }
 
     private function formatValue(mixed $value, Field $field): mixed

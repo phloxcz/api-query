@@ -14,6 +14,7 @@ namespace Phlox\ApiQuery\Fields;
 
 use Phlox\ApiCore\Attributes\Schema;
 use Phlox\ApiCore\Documentation\SchemaBuilder;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiCore\Types\DocComment;
 use Phlox\ApiCore\Types\DtoField;
 use Phlox\ApiCore\Types\DtoMeta;
@@ -470,28 +471,6 @@ final class FieldMap
     }
 
     /**
-     * @param array<string, mixed>|\stdClass $item
-     * @return array<string, mixed>
-     */
-    public static function buildPageSchema(array|\stdClass $item): array
-    {
-        $nullableInteger = ['type' => ['integer', 'null']];
-
-        return [
-            'type' => 'object',
-            'required' => ['data', 'total', 'page', 'pageSize', 'from', 'to'],
-            'properties' => [
-                'data' => ['type' => 'array', 'items' => $item],
-                'total' => ['type' => 'integer', 'description' => 'Rows matching the query, on all pages.'],
-                'page' => $nullableInteger,
-                'pageSize' => $nullableInteger,
-                'from' => $nullableInteger + ['description' => 'Index of the first row on this page, from 0.'],
-                'to' => $nullableInteger + ['description' => 'Index of the last row on this page, from 0.'],
-            ],
-        ];
-    }
-
-    /**
      * @return array<string, mixed>
      */
     private function buildObjectSchema(SchemaBuilder $builder): array
@@ -541,7 +520,7 @@ final class FieldMap
         $target = $relation->getTarget()->toSchema($builder);
 
         return $relation->toMany
-            ? self::buildPageSchema($target)
+            ? Paged::wrap($target)
             : ['anyOf' => [$target, ['type' => 'null']]];
     }
 

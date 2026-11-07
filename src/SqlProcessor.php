@@ -16,6 +16,7 @@ use Nette\Database\Connection;
 use Nette\Database\Drivers\MsSqlDriver;
 use Nette\Database\Drivers\SqlsrvDriver;
 use Nette\Utils\Arrays;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiQuery\Events\ProcessedRowEventData;
 use Phlox\ApiQuery\Fields\Field;
 use Phlox\ApiQuery\Fields\FieldMap;
@@ -151,16 +152,7 @@ final class SqlProcessor
             return $data;
         }
 
-        $last = min($offset + $pageSize, $total) - 1;
-
-        return [
-            'data' => $data,
-            'total' => $total,
-            'page' => (int) floor($offset / $pageSize) + 1,
-            'pageSize' => $pageSize,
-            'from' => $offset > $last ? null : $offset,
-            'to' => $offset > $last ? null : $last,
-        ];
+        return Paged::result($data, $total, $offset, $pageSize);
     }
 
     /**

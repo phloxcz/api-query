@@ -15,6 +15,7 @@ namespace Phlox\ApiQuery\Attributes;
 use Attribute;
 use Phlox\ApiCore\Documentation\DescribesMethod;
 use Phlox\ApiCore\Documentation\SchemaBuilder;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiQuery\Documentation\QuerySchema;
 use Phlox\ApiQuery\Fields\FieldMap;
 use Phlox\ApiQuery\Fields\SqlField;
@@ -55,6 +56,6 @@ final class QueryOfSql implements DescribesMethod
 
     public function describeResponse(SchemaBuilder $builder): array
     {
-        return FieldMap::buildPageSchema($this->getFieldMap()->toSchema($builder));
+        return Paged::wrap($this->getFieldMap()->toSchema($builder));
     }
 }

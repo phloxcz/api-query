@@ -17,7 +17,7 @@
             "url": "../phlox-api-core",
             "options": {
                 "versions": {
-                    "phloxcz/api-core": "0.1.x-dev"
+                    "phloxcz/api-core": "0.2.x-dev"
                 }
             }
         },
@@ -44,7 +44,7 @@
             "url": "../phlox-rest-api",
             "options": {
                 "versions": {
-                    "phloxcz/rest-api": "0.1.x-dev"
+                    "phloxcz/rest-api": "0.2.x-dev"
                 }
             }
         },
@@ -53,7 +53,7 @@
             "url": "../phlox-rpc-api",
             "options": {
                 "versions": {
-                    "phloxcz/rpc-api": "0.1.x-dev"
+                    "phloxcz/rpc-api": "0.2.x-dev"
                 }
             }
         }
@@ -64,7 +64,7 @@
         "nette/di": "^3.1",
         "nette/schema": "^1.3",
         "nette/utils": "^4.0",
-        "phloxcz/api-core": "^0.1@dev",
+        "phloxcz/api-core": "^0.2@dev",
         "phloxcz/entity-database": "^0.1@dev"
     },
     "require-dev": {
@@ -73,8 +73,8 @@
         "nette/caching": "^3.2",
         "nette/tester": "^2.5",
         "phloxcz/firebird-database": "^0.1@dev",
-        "phloxcz/rest-api": "^0.1@dev",
-        "phloxcz/rpc-api": "^0.1@dev",
+        "phloxcz/rest-api": "^0.2@dev",
+        "phloxcz/rpc-api": "^0.2@dev",
         "phpstan/phpstan": "^2.0",
         "tracy/tracy": "^2.10"
     },
@@ -103,7 +103,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "0.1-dev"
+            "dev-master": "0.2-dev"
         }
     }
 }

@@ -369,13 +369,23 @@ An event gets the entity, and can read anything of it, also what the query didn'
 
 ## Documentation
 
-With `phloxcz/rest-api` or `phloxcz/rpc-api`, a `Query` parameter is documented with its full structure. An entity named anywhere in documentation, such as in `#[Response(200, ['@pager', User::class])]`, is described by what a query can reach of it. `#[QueryOf]` and `#[QueryOfSql]` also list what a filter and a sort can name, and give the shape of the response:
+With `phloxcz/rest-api` or `phloxcz/rpc-api`, a `Query` parameter is documented with its full structure. An entity named anywhere in documentation, such as in `#[Response(200, new Paged(User::class))]`, is described by what a query can reach of it. `#[QueryOf]` and `#[QueryOfSql]` also list what a filter and a sort can name, and give the shape of the response:
 
 ```php
 public function detail(int $id, #[QueryOf(UserResource::class, single: true)] Query $query): ?array
 ```
 
-`single: true` means one record rather than a page.
+`single: true` means one record rather than a page. The page is built and described by [`Paged`](https://github.com/phloxcz/api-core#describing-a-response) of `phloxcz/api-core`, so it's the same everywhere.
+
+That shape is what `process()` returns. A method returning something else, such as the result in an envelope, says so by `#[Response]`, which takes precedence:
+
+```php
+#[Response(200, new Shape(['value' => new Paged(UserResource::class)]))]
+public function list(#[QueryOf(UserResource::class)] ?Query $query = null): array
+{
+    return ['value' => $this->processor->process($this->db->table('users'), $query)];
+}
+```
 
 ## Migrating from abrad450/api-server-nette
 

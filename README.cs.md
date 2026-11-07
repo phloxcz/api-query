@@ -369,13 +369,23 @@ Událost dostane entitu a může z ní číst cokoli, i to, co dotaz nevybral. D
 
 ## Dokumentace
 
-S `phloxcz/rest-api` nebo `phloxcz/rpc-api` se parametr `Query` dokumentuje s celou strukturou. Entita uvedená kdekoli v dokumentaci, třeba v `#[Response(200, ['@pager', User::class])]`, se popíše podle toho, na co z ní dotaz dosáhne. `#[QueryOf]` a `#[QueryOfSql]` navíc vyjmenují, co lze uvést ve filtru a řazení, a dodají tvar odpovědi:
+S `phloxcz/rest-api` nebo `phloxcz/rpc-api` se parametr `Query` dokumentuje s celou strukturou. Entita uvedená kdekoli v dokumentaci, třeba v `#[Response(200, new Paged(User::class))]`, se popíše podle toho, na co z ní dotaz dosáhne. `#[QueryOf]` a `#[QueryOfSql]` navíc vyjmenují, co lze uvést ve filtru a řazení, a dodají tvar odpovědi:
 
 ```php
 public function detail(int $id, #[QueryOf(UserResource::class, single: true)] Query $query): ?array
 ```
 
-`single: true` znamená jeden záznam místo stránky.
+`single: true` znamená jeden záznam místo stránky. Stránku skládá i popisuje [`Paged`](https://github.com/phloxcz/api-core/blob/master/README.cs.md#popis-odpovědi) z `phloxcz/api-core`, takže je všude stejná.
+
+Tenhle tvar vrací `process()`. Metoda, která vrací něco jiného, třeba výsledek v obálce, to řekne přes `#[Response]`, který má přednost:
+
+```php
+#[Response(200, new Shape(['value' => new Paged(UserResource::class)]))]
+public function list(#[QueryOf(UserResource::class)] ?Query $query = null): array
+{
+    return ['value' => $this->processor->process($this->db->table('users'), $query)];
+}
+```
 
 ## Přechod z abrad450/api-server-nette
 

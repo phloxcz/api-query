@@ -13,6 +13,7 @@ declare(strict_types=1);
 namespace Phlox\ApiQuery;
 
 use Phlox\ApiCore\ApiException;
+use Phlox\ApiCore\ProtocolError;
 
 /**
  * A query that can't be carried out, with everything wrong with it.
@@ -24,12 +25,7 @@ final class QueryException extends ApiException
      */
     public function __construct(array $fields)
     {
-        parent::__construct(
-            self::E_INVALID_PARAMS,
-            'Invalid query.',
-            data: ['fields' => $fields],
-            httpCode: 400,
-        );
+        parent::__construct(400, 'Invalid query.', errorCode: ProtocolError::InvalidParams->value, data: ['fields' => $fields]);
     }
 
     public static function at(string $where, string $error): self

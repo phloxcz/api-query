@@ -6,6 +6,7 @@ namespace Phlox\ApiQuery\Tests\Fixtures\ShortDocs;
 
 use Phlox\ApiCore\ApiController;
 use Phlox\ApiCore\Attributes\AllowAnonymous;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiQuery\Attributes\QueryOf;
 use Phlox\ApiQuery\Query;
 use Phlox\ApiQuery\Tests\Fixtures\Entity\Role;
@@ -55,7 +56,7 @@ class ShortController extends ApiController
 
     #[HttpPost]
     #[Route('described')]
-    #[Response(200, ['@pager', StarRole::class])]
+    #[Response(200, new Paged(StarRole::class))]
     public function described(): array
     {
         return [];

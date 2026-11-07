@@ -15,6 +15,7 @@ namespace Phlox\ApiQuery\Attributes;
 use Attribute;
 use Phlox\ApiCore\Documentation\DescribesMethod;
 use Phlox\ApiCore\Documentation\SchemaBuilder;
+use Phlox\ApiCore\Schema\Paged;
 use Phlox\ApiCore\Types\Type;
 use Phlox\ApiQuery\Documentation\QuerySchema;
 use Phlox\ApiQuery\Fields\FieldMap;
@@ -76,6 +77,6 @@ final class QueryOf implements DescribesMethod
             ? $builder->build(new Type(Type::ClassName, class: $this->class))
             : $this->getFieldMap()->toSchema($builder);
 
-        return $this->single ? $item : FieldMap::buildPageSchema($item);
+        return $this->single ? $item : Paged::wrap($item);
     }
 }
